@@ -6,16 +6,24 @@ use super::ACPITableHeader;
 /// The offset of the entries in the MADT.
 const ENTRIES_OFF: usize = 0x2c;
 
+/// Entry describing a processor local APIC.
+pub const ENTRY_PROCESSOR_LOCAL_APIC: u8 = 0;
+/// Entry describing an I/O APIC.
+pub const ENTRY_IO_APIC: u8 = 1;
+/// Entry describing a local APIC address override.
+pub const ENTRY_LOCAL_APIC_ADDRESS_OVERRIDE: u8 = 5;
+// TODO Add all types
+
 /// The Multiple APIC Description Table.
 #[repr(C)]
 pub struct Madt {
 	/// The table's header.
 	pub header: ACPITableHeader,
 
+	/// The address of the APIC.
+	pub local_apic_addr: u32,
 	/// TODO doc
-	local_apic_addr: u32,
-	/// TODO doc
-	flags: u32,
+	pub flags: u32,
 }
 
 impl Madt {
@@ -61,4 +69,37 @@ impl EntryHeader {
 	pub fn get_length(&self) -> u8 {
 		self.length
 	}
+}
+
+/// Processor Local APIC entry structure.
+#[repr(C)]
+pub struct EntryProcessorLocalAPIC {
+	/// The processor ID.
+	pub id: u8,
+	/// The APIC ID.
+	pub apic_id: u8,
+	/// Flags.
+	pub flags: u32,
+}
+
+/// I/O APIC entry structure.
+#[repr(C)]
+pub struct EntryIOAPIC {
+	/// The I/O APIC ID.
+	pub io_apic_id: u8,
+	/// Reserved byte.
+	reserved: u8,
+	/// The I/O APIC address.
+	pub io_apic_addr: u32,
+	/// The global system interrupt base.
+	pub global_system_interrupt_base: u32,
+}
+
+/// Local APIC Address Override entry structure.
+#[repr(C)]
+pub struct EntryLocalAPICAddressOverride {
+	/// Reserved word.
+	reserved: u16,
+	/// The local APIC physical address.
+	pub local_apic_addr: u64,
 }

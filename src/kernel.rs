@@ -35,6 +35,7 @@
 
 mod acpi;
 mod cmdline;
+mod cpu;
 mod debug;
 mod device;
 mod elf;
@@ -182,6 +183,13 @@ pub extern "C" fn kernel_main(magic: u32, multiboot_ptr: *const c_void) -> ! {
 
 	println!("Initializing ACPI...");
 	acpi::init();
+
+	let cpu_count = cpu::get_count();
+	println!("{} CPUs are available", cpu_count);
+	if cpu_count > 1 {
+		println!("Initializing multicore...");
+		cpu::init_multicore();
+	}
 
 	println!("Initializing ramdisks...");
 	if device::storage::ramdisk::create().is_err() {

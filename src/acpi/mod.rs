@@ -7,6 +7,8 @@
 
 use core::ffi::c_void;
 use core::intrinsics::wrapping_add;
+use crate::cpu::CPU;
+use crate::cpu;
 use crate::memory;
 use crate::time;
 use crate::util;
@@ -152,10 +154,37 @@ pub fn init() {
 		}
 
 		if let Some(madt) = rsdt.get_table::<Madt>() {
+			unsafe {
+				cpu::set_apic_addr(madt.local_apic_addr as _);
+			}
+
 			madt.foreach_entry(| e: &madt::EntryHeader | {
 				match e.get_type() {
-					0 => {
-						// TODO Register a new CPU
+					madt::ENTRY_PROCESSOR_LOCAL_APIC => {
+						let e = unsafe {
+							&*(e as *const _ as *const madt::EntryProcessorLocalAPIC)
+						};
+
+						if cpu::add_core(CPU::new(e.id as _, e.apic_id as _, e.flags)).is_err() {
+							crate::kernel_panic!("Error while enumerating CPUs");
+						}
+					},
+
+					madt::ENTRY_LOCAL_APIC_ADDRESS_OVERRIDE => {
+						if util::ptr_size() == 8 {
+							// TODO
+							todo!();
+						}
+					},
+
+					_ => {},
+				}
+			});
+
+			madt.foreach_entry(| e: &madt::EntryHeader | {
+				match e.get_type() {
+					madt::ENTRY_IO_APIC => {
+						// TODO Set the APIC io addr
 					},
 
 					_ => {},

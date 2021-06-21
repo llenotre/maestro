@@ -4,17 +4,18 @@
 //! - Data structures do not require memory allocations
 //! - Containers require memory allocations
 
+use core::mem::size_of;
+use core::ffi::c_void;
+use core::fmt;
+use core::mem::MaybeUninit;
+use crate::errno::Errno;
+
 pub mod boxed;
 pub mod container;
 pub mod list;
 pub mod lock;
 pub mod math;
 pub mod ptr;
-
-use core::ffi::c_void;
-use core::fmt;
-use core::mem::MaybeUninit;
-use crate::errno::Errno;
 
 /// Tells if pointer `ptr` is aligned on boundary `n`.
 #[inline(always)]
@@ -221,6 +222,11 @@ pub fn nbr_len(s: &[u8]) -> usize {
 	}
 
 	i
+}
+
+/// Returns the size of a pointer in bytes on the current architecture.
+pub fn ptr_size() -> usize {
+	size_of::<*const ()>()
 }
 
 #[cfg(test)]
