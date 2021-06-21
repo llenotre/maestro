@@ -184,7 +184,23 @@ pub fn init() {
 			madt.foreach_entry(| e: &madt::EntryHeader | {
 				match e.get_type() {
 					madt::ENTRY_IO_APIC => {
-						// TODO Set the APIC io addr
+						let e = unsafe {
+							&*(e as *const _ as *const madt::EntryIOAPIC)
+						};
+
+						let list_mutex = cpu::list();
+						let mut list_guard = list_mutex.lock();
+						let list = list_guard.get_mut();
+
+						for i in 0..list.len() {
+							let mut guard = list[i].lock();
+							let cpu = guard.get_mut();
+
+							if cpu.get_apic_id() == e.io_apic_id as _ {
+								cpu.set_io_apic_addr(Some(e.io_apic_addr as _));
+								break;
+							}
+						}
 					},
 
 					_ => {},

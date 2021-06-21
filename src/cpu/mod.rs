@@ -100,6 +100,13 @@ pub fn add_core(cpu: CPU) -> Result<(), Errno> {
 	}
 }
 
+/// Returns a mutable reference to the CPUs list's Mutex.
+pub fn list() -> &'static mut Mutex<Vec<Mutex<CPU>>> {
+	unsafe {
+		&mut CPUS
+	}
+}
+
 /// Initializes CPU cores other than the main core.
 /// This function must be called **only once, at boot**.
 pub fn init_multicore() {

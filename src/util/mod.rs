@@ -225,6 +225,7 @@ pub fn nbr_len(s: &[u8]) -> usize {
 }
 
 /// Returns the size of a pointer in bytes on the current architecture.
+#[inline]
 pub fn ptr_size() -> usize {
 	size_of::<*const ()>()
 }

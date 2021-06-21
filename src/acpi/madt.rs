@@ -74,6 +74,9 @@ impl EntryHeader {
 /// Processor Local APIC entry structure.
 #[repr(C)]
 pub struct EntryProcessorLocalAPIC {
+	/// The entry header.
+	pub header: EntryHeader,
+
 	/// The processor ID.
 	pub id: u8,
 	/// The APIC ID.
@@ -85,6 +88,9 @@ pub struct EntryProcessorLocalAPIC {
 /// I/O APIC entry structure.
 #[repr(C)]
 pub struct EntryIOAPIC {
+	/// The entry header.
+	pub header: EntryHeader,
+
 	/// The I/O APIC ID.
 	pub io_apic_id: u8,
 	/// Reserved byte.
@@ -98,6 +104,9 @@ pub struct EntryIOAPIC {
 /// Local APIC Address Override entry structure.
 #[repr(C)]
 pub struct EntryLocalAPICAddressOverride {
+	/// The entry header.
+	pub header: EntryHeader,
+
 	/// Reserved word.
 	reserved: u16,
 	/// The local APIC physical address.
