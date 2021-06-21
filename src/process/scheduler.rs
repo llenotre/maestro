@@ -10,6 +10,7 @@
 
 use core::cmp::max;
 use core::ffi::c_void;
+use crate::cpu;
 use crate::errno::Errno;
 use crate::event::{Callback, CallbackHook, InterruptResult};
 use crate::event;
@@ -245,7 +246,6 @@ impl Scheduler {
 		if let Some(next_proc) = scheduler.get_next_process() {
 			scheduler.curr_proc = Some(next_proc.clone());
 
-			let core_id = 0; // TODO
 			let f = | data | {
 				let (syscalling, regs) = {
 					let data = unsafe {
@@ -282,7 +282,7 @@ impl Scheduler {
 			};
 
 			let tmp_stack = unsafe {
-				scheduler.tmp_stacks[core_id].as_ptr_mut() as *mut c_void
+				scheduler.tmp_stacks[cpu::get_current() as _].as_ptr_mut() as *mut c_void
 			};
 			let ctx_switch_data = ContextSwitchData {
 				proc: scheduler.curr_proc.as_mut().unwrap().clone(),

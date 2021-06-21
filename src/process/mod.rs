@@ -1,16 +1,10 @@
 //! A process is a task running on the kernel. A multitasking system allows several processes to
 //! run at the same time by sharing the CPU resources using a scheduler.
 
-pub mod mem_space;
-pub mod pid;
-pub mod scheduler;
-pub mod semaphore;
-pub mod signal;
-pub mod tss;
-
 use core::ffi::c_void;
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;
+use crate::cpu;
 use crate::errno::Errno;
 use crate::errno;
 use crate::event::{Callback, InterruptResult, InterruptResultAction};
@@ -36,6 +30,13 @@ use scheduler::Scheduler;
 use signal::Signal;
 use signal::SignalHandler;
 use signal::SignalType;
+
+pub mod mem_space;
+pub mod pid;
+pub mod scheduler;
+pub mod semaphore;
+pub mod signal;
+pub mod tss;
 
 /// The size of the userspace stack of a process in number of pages.
 const USER_STACK_SIZE: usize = 2048;
@@ -207,10 +208,9 @@ pub fn init() -> Result<(), Errno> {
 	tss::init();
 	tss::flush();
 
-	let cores_count = 1; // TODO
 	unsafe {
 		PID_MANAGER.write(Mutex::new(PIDManager::new()?));
-		SCHEDULER.write(Scheduler::new(cores_count)?);
+		SCHEDULER.write(Scheduler::new(cpu::get_count())?);
 	}
 
 	// TODO Register for all errors that can be caused by a process

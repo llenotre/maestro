@@ -1,14 +1,27 @@
 //! This module handles CPU-related features, including multicore.
+//!
+//! Before booting a new CPU core, the kernel relocates what's called the "trampoline code" which
+//! is the code to be executed by the new core in the beginning. Since the core is booting in real
+//! mode, the trampoline code is required to be assembly code.
 
 use core::ffi::c_void;
+use core::mem::transmute;
 use core::ptr::null_mut;
+use core::ptr;
 use crate::errno::Errno;
 use crate::memory;
 use crate::util::container::vec::Vec;
 use crate::util::lock::mutex::Mutex;
 
+/// The physical address to the destination of the trampoline.
+const TRAMPOLINE_PTR: *mut c_void = 0x8000 as *mut c_void;
+/// The size of the trampoline code in bytes. This value can be a bit larger than required.
+const TRAMPOLINE_SIZE: usize = memory::PAGE_SIZE;
+
 extern "C" {
 	fn get_current_apic() -> u32;
+
+	fn cpu_trampoline();
 }
 
 /// Structure representing a CPU core.
@@ -86,7 +99,8 @@ pub fn get_count() -> usize {
 	}
 }
 
-/// Returns the ID of the current running APIC.
+// TODO Return a dynamicaly associated ID instead to ensure that the IDs are linear
+/// Returns the ID of the current running CPU.
 pub fn get_current() -> u32 {
 	unsafe {
 		get_current_apic()
@@ -107,23 +121,37 @@ pub fn list() -> &'static mut Mutex<Vec<Mutex<CPU>>> {
 	}
 }
 
+/// Copies the trampoline code to its destination address to ensure it is accessible from real mode
+/// CPUs.
+fn relocate_trampoline() {
+	let src = unsafe {
+		transmute::<unsafe extern "C" fn(), *const c_void>(cpu_trampoline)
+	};
+	let dest = memory::kern_to_virt(TRAMPOLINE_PTR) as _;
+
+	unsafe {
+		ptr::copy_nonoverlapping(src, dest, TRAMPOLINE_SIZE);
+	}
+}
+
 /// Initializes CPU cores other than the main core.
 /// This function must be called **only once, at boot**.
 pub fn init_multicore() {
+	relocate_trampoline();
+
+	let curr_id = get_current();
 	let mut cores_guard = unsafe { // Safe because using Mutex
 		CPUS.lock()
 	};
 	let cores = cores_guard.get_mut();
-
-	let curr_id = get_current();
 	for i in 0..cores.len() {
 		let cpu_guard = cores[i].lock();
 		let cpu = cpu_guard.get();
 
-		if cpu.apic_id == curr_id {
+		if cpu.apic_id == curr_id || !cpu.can_enable() {
 			continue;
 		}
 
-		// TODO
+		// TODO Enable the CPU
 	}
 }
