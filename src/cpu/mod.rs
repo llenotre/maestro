@@ -6,7 +6,6 @@
 
 use core::ffi::c_void;
 use core::mem::transmute;
-use core::ptr::null_mut;
 use core::ptr;
 use crate::errno::Errno;
 use crate::memory;
@@ -16,6 +15,7 @@ use crate::util::lock::mutex::Mutex;
 use crate::util;
 
 mod startup;
+pub mod pic;
 
 /// The physical address to the destination of the trampoline.
 const TRAMPOLINE_PTR: *mut c_void = 0x8000 as *mut c_void;
@@ -29,18 +29,72 @@ const APIC_OFFSET_ICR0: usize = 0x300;
 /// The offset of the APIC Interrupt Command Register register 1.
 const APIC_OFFSET_ICR1: usize = 0x310;
 
+extern "C" {
+	fn msr_exist() -> u32;
+	fn msr_read(i: u32, lo: *mut u32, hi: *mut u32);
+	fn msr_write(i: u32, lo: u32, hi: u32);
+
+	fn get_current_apic() -> u32;
+
+	fn cpu_trampoline();
+}
+
+/// Model Specific Register (MSR) features.
+pub mod msr {
+	use super::*;
+
+	/// Tells whether MSR exist.
+	pub fn exist() -> bool {
+		unsafe {
+			msr_exist() != 0
+		}
+	}
+
+	/// Reads the `i`th MSR and returns its value.
+	pub fn read(i: u32) -> u64 {
+		let mut lo = 0;
+		let mut hi = 0;
+		unsafe {
+			msr_read(i, &mut lo, &mut hi);
+		}
+
+		((hi as u64) << 32) | (lo as u64)
+	}
+
+	/// Writes the `i`th MSR with value `val`.
+	pub fn write(i: u32, val: u64) {
+		unsafe {
+			msr_write(i, (val & 0xffff) as _, ((val >> 32) & 0xffff) as _);
+		}
+	}
+}
+
 /// Module handling APIC-related features.
 pub mod apic {
 	use super::*;
 
 	/// The APIC's virtual address.
-	static mut APIC_ADDR: *mut c_void = null_mut();
+	static mut APIC_ADDR: Option<*mut c_void> = None;
 
 	/// Sets the APIC physical address.
 	/// This function is **not** thread-safe.
 	pub unsafe fn set_addr(addr: *mut c_void) {
 		// TODO Remap kernel? (since the APIC seems to be accessed through DMA)
-		APIC_ADDR = memory::kern_to_virt(addr) as _;
+		APIC_ADDR = Some(memory::kern_to_virt(addr) as _);
+	}
+
+	/// Enables the APIC.
+	/// This function requires the APIC address to be set first. If not set, the behaviour is
+	/// undefined.
+	/// This function is **not** thread-safe.
+	pub fn enable() {
+		// TODO
+	}
+
+	/// Tells whether the APIC is enabled.
+	/// This function is **not** thread-safe.
+	pub unsafe fn is_enabled() -> bool {
+		APIC_ADDR.is_some()
 	}
 
 	/// Returns a mutable reference to the APIC register at offset `offset`.
@@ -48,7 +102,7 @@ pub mod apic {
 	/// undefined.
 	/// If the offset is invalid, the behaviour is undefined.
 	pub unsafe fn get_register(offset: usize) -> *mut u32 {
-		let ptr = (APIC_ADDR as usize + offset) as *mut u32;
+		let ptr = (APIC_ADDR.unwrap() as usize + offset) as *mut u32;
 		debug_assert!(util::is_aligned(ptr as _, 16));
 		ptr
 	}
@@ -62,12 +116,11 @@ pub mod apic {
 			while ptr::read_volatile(icr0) & (1 << 12) != 0 {}
 		}
 	}
-}
 
-extern "C" {
-	fn get_current_apic() -> u32;
-
-	fn cpu_trampoline();
+	/// Sends an End-Of-Interrupt message to the APIC for the given interrupt `irq`.
+	pub fn end_of_interrupt(_irq: u8) {
+		// TODO
+	}
 }
 
 /// Structure representing a CPU core.
@@ -206,8 +259,12 @@ fn relocate_trampoline() {
 }
 
 /// Initializes CPU cores other than the main core.
+/// This function also disables the PIC.
 /// This function must be called **only once, at boot**.
 pub fn init_multicore() {
+	pic::disable();
+	apic::enable();
+
 	relocate_trampoline();
 
 	let curr_id = get_current();
@@ -222,5 +279,19 @@ pub fn init_multicore() {
 		if cpu.apic_id != curr_id && cpu.can_enable() {
 			cpu.enable();
 		}
+	}
+}
+
+/// The function to be called at the end of an interrupt.
+#[no_mangle]
+extern "C" fn end_of_interrupt(irq: u8) {
+	let enabled = unsafe {
+		apic::is_enabled()
+	};
+
+	if enabled {
+		apic::end_of_interrupt(irq);
+	} else {
+		pic::end_of_interrupt(irq);
 	}
 }

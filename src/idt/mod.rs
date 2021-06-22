@@ -1,10 +1,9 @@
 //! The Interrupt Descriptor Table (IDT) is a table under the x86 architecture storing the list of
 //! interrupt handlers, allowing to catch and handle interruptions.
 
-pub mod pic;
-
 use core::ffi::c_void;
 use core::mem::MaybeUninit;
+use crate::cpu::pic;
 use crate::util;
 
 /// TODO Doc
@@ -165,6 +164,7 @@ fn get_c_fn_ptr(f: unsafe extern "C" fn()) -> *const c_void {
 }
 
 /// Initializes the IDT. This function must be called only once at kernel initialization.
+/// This function also enables the PIC.
 /// When returning, maskable interrupts are disabled by default.
 pub fn init() {
 	cli!();

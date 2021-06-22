@@ -2,8 +2,8 @@
 //! each interrupts. Each callback has a priority number and is called in descreasing order.
 
 use core::mem::MaybeUninit;
+use crate::cpu::pic;
 use crate::errno::Errno;
-use crate::idt::pic;
 use crate::idt;
 use crate::process::tss;
 use crate::util::boxed::Box;

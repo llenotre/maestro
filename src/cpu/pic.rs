@@ -74,8 +74,7 @@ pub fn disable() {
 }
 
 /// Sends an End-Of-Interrupt message to the PIC for the given interrupt `irq`.
-#[no_mangle]
-pub extern "C" fn end_of_interrupt(irq: u8) {
+pub fn end_of_interrupt(irq: u8) {
 	if irq >= 0x8 {
 		unsafe {
 			io::outb(SLAVE_COMMAND, COMMAND_EOI);
