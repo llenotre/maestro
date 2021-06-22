@@ -42,8 +42,8 @@ const ICW4_SFNM: u8 = 0x10;
 /// TODO doc
 const COMMAND_EOI: u8 = 0x20;
 
-/// Initializes the PIC.
-pub fn init(offset1: u8, offset2: u8) {
+/// Enables the PIC.
+pub fn enable(offset1: u8, offset2: u8) {
 	unsafe {
 		let mask1 = io::inb(MASTER_DATA);
 		let mask2 = io::inb(SLAVE_DATA);
@@ -62,6 +62,14 @@ pub fn init(offset1: u8, offset2: u8) {
 
 		io::outb(MASTER_DATA, mask1);
 		io::outb(SLAVE_DATA, mask2);
+	}
+}
+
+/// Disables the PIC.
+pub fn disable() {
+	unsafe {
+		io::outb(MASTER_DATA, 0xff);
+		io::outb(SLAVE_DATA, 0xff);
 	}
 }
 

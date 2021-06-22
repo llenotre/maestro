@@ -57,11 +57,11 @@ pub fn get() -> Timestamp {
 }
 
 /// Makes the CPU wait for at least `n` milliseconds.
-pub fn mdelay(_n: usize) {
+pub fn mdelay(_n: u32) {
 	// TODO
 }
 
 /// Makes the CPU wait for at least `n` microseconds.
-pub fn udelay(_n: usize) {
+pub fn udelay(_n: u32) {
 	// TODO
 }

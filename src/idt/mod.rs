@@ -168,7 +168,7 @@ fn get_c_fn_ptr(f: unsafe extern "C" fn()) -> *const c_void {
 /// When returning, maskable interrupts are disabled by default.
 pub fn init() {
 	cli!();
-	pic::init(0x20, 0x28);
+	pic::enable(0x20, 0x28);
 
 	// Access to global variable. Safe because the function is supposed to be called only once
 	unsafe {
