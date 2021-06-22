@@ -8,8 +8,34 @@
 
 .global cpu_trampoline
 
+.extern cpu_startup
+
 .section .text
 
 cpu_trampoline:
-	# TODO
-	jmp cpu_trampoline
+	cli
+	cld
+
+	lgdt GDT_DESC_PHYS_PTR
+	mov %cr0, %eax
+	or $1, %al
+	mov %eax, %cr0
+
+	jmp $0x8, $complete_flush
+complete_flush:
+	mov $0x10, %ax
+	mov %ax, %ds
+	mov %ax, %es
+	mov %ax, %fs
+	mov %ax, %gs
+	mov %ax, %ss
+
+.align 32
+init_stack:
+	mov $1, %eax
+	cpuid
+	shr $24, %ebx
+
+	# TODO Setup stack
+
+	jmp cpu_startup

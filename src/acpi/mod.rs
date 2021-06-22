@@ -155,7 +155,7 @@ pub fn init() {
 
 		if let Some(madt) = rsdt.get_table::<Madt>() {
 			unsafe {
-				cpu::set_apic_addr(madt.local_apic_addr as _);
+				cpu::apic::set_addr(madt.local_apic_addr as _);
 			}
 
 			madt.foreach_entry(| e: &madt::EntryHeader | {

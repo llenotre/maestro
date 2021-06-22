@@ -10,13 +10,59 @@ use core::ptr::null_mut;
 use core::ptr;
 use crate::errno::Errno;
 use crate::memory;
+use crate::time;
 use crate::util::container::vec::Vec;
 use crate::util::lock::mutex::Mutex;
+use crate::util;
+
+mod startup;
 
 /// The physical address to the destination of the trampoline.
 const TRAMPOLINE_PTR: *mut c_void = 0x8000 as *mut c_void;
 /// The size of the trampoline code in bytes. This value can be a bit larger than required.
 const TRAMPOLINE_SIZE: usize = memory::PAGE_SIZE;
+
+/// The offset of the APIC error status register.
+const APIC_OFFSET_ERROR_STATUS: usize = 0x280;
+/// The offset of the APIC Interrupt Command Register register 0.
+const APIC_OFFSET_ICR0: usize = 0x300;
+/// The offset of the APIC Interrupt Command Register register 1.
+const APIC_OFFSET_ICR1: usize = 0x310;
+
+/// Module handling APIC-related features.
+pub mod apic {
+	use super::*;
+
+	/// The APIC's virtual address.
+	static mut APIC_ADDR: *mut c_void = null_mut();
+
+	/// Sets the APIC physical address.
+	/// This function is **not** thread-safe.
+	pub unsafe fn set_addr(addr: *mut c_void) {
+		// TODO Remap kernel? (since the APIC seems to be accessed through DMA)
+		APIC_ADDR = memory::kern_to_virt(addr) as _;
+	}
+
+	/// Returns a mutable reference to the APIC register at offset `offset`.
+	/// This function requires the APIC address to be set first. If not set, the behaviour is
+	/// undefined.
+	/// If the offset is invalid, the behaviour is undefined.
+	pub unsafe fn get_register(offset: usize) -> *mut u32 {
+		let ptr = (APIC_ADDR as usize + offset) as *mut u32;
+		debug_assert!(util::is_aligned(ptr as _, 16));
+		ptr
+	}
+
+	/// Waits until the interrupt has been delivered.
+	/// This function requires the APIC address to be set first. If not set, the behaviour is
+	/// undefined.
+	pub fn wait_delivery() {
+		unsafe { // Safe because the register offset is valid
+			let icr0 = apic::get_register(APIC_OFFSET_ICR0);
+			while ptr::read_volatile(icr0) & (1 << 12) != 0 {}
+		}
+	}
+}
 
 extern "C" {
 	fn get_current_apic() -> u32;
@@ -78,19 +124,44 @@ impl CPU {
 	pub fn can_enable(&self) -> bool {
 		(self.flags & 0b1 != 0) || (self.flags & 0b10 != 0)
 	}
+
+	/// Enables the CPU. If already enabled, the behaviour is undefined.
+	pub fn enable(&self) {
+		unsafe {
+			let err = apic::get_register(APIC_OFFSET_ERROR_STATUS);
+			let icr0 = apic::get_register(APIC_OFFSET_ICR0);
+			let icr1 = apic::get_register(APIC_OFFSET_ICR1);
+
+			ptr::write_volatile(err, 0);
+
+			ptr::write_volatile(icr1, (ptr::read_volatile(icr1) & 0x00ffffff)
+				| (self.apic_id << 24));
+			ptr::write_volatile(icr0, (ptr::read_volatile(icr0) & 0xfff00000) | 0xc500);
+			apic::wait_delivery();
+
+			ptr::write_volatile(icr1, (ptr::read_volatile(icr1) & 0x00ffffff)
+				| (self.apic_id << 24));
+			ptr::write_volatile(icr0, (ptr::read_volatile(icr0) & 0xfff00000) | 0x8500);
+			apic::wait_delivery();
+
+			time::mdelay(10);
+
+			for _ in 0..2 {
+				ptr::write_volatile(err, 0);
+
+				ptr::write_volatile(icr1, (ptr::read_volatile(icr1) & 0x00ffffff)
+					| (self.apic_id << 24));
+				ptr::write_volatile(icr0, (ptr::read_volatile(icr0) & 0xfff0f800) | 0x000608);
+
+				time::udelay(200);
+				apic::wait_delivery();
+			}
+		}
+	}
 }
 
-/// The APIC's virtual address.
-static mut APIC_ADDR: *mut c_void = null_mut();
 /// The list of CPUs on the system.
 static mut CPUS: Mutex<Vec<Mutex<CPU>>> = Mutex::new(Vec::new());
-
-/// Sets the APIC physical address.
-/// This function is **not** thread-safe.
-pub unsafe fn set_apic_addr(addr: *mut c_void) {
-	// TODO Remap kernel? (since the APIC seems to be accessed through DMA)
-	APIC_ADDR = memory::kern_to_virt(addr) as _;
-}
 
 /// Returns the number of CPUs on the system.
 pub fn get_count() -> usize {
@@ -148,10 +219,8 @@ pub fn init_multicore() {
 		let cpu_guard = cores[i].lock();
 		let cpu = cpu_guard.get();
 
-		if cpu.apic_id == curr_id || !cpu.can_enable() {
-			continue;
+		if cpu.apic_id != curr_id && cpu.can_enable() {
+			cpu.enable();
 		}
-
-		// TODO Enable the CPU
 	}
 }

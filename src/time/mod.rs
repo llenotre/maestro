@@ -55,3 +55,13 @@ pub fn get() -> Timestamp {
 	let cmos = &mut sources[0]; // TODO Select the preferred source
 	cmos.get_time()
 }
+
+/// Makes the CPU wait for at least `n` milliseconds.
+pub fn mdelay(_n: usize) {
+	// TODO
+}
+
+/// Makes the CPU wait for at least `n` microseconds.
+pub fn udelay(_n: usize) {
+	// TODO
+}

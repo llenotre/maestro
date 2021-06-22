@@ -61,7 +61,6 @@ switch_protected:
 	movl $GDT_PHYS_PTR, 2(%eax)
 
 	lgdt GDT_DESC_PHYS_PTR
-
 	mov %cr0, %eax
 	or $1, %al
 	mov %eax, %cr0
