@@ -7,11 +7,9 @@
 spin_lock:
 	push %ebp
 	mov %esp, %ebp
-
-	push %eax
 	push %ebx
-	mov 8(%ebp), %ebx
 
+	mov 8(%ebp), %ebx
 spin:
 	mov $1, %eax
 	xchg %eax, (%ebx)
@@ -19,8 +17,6 @@ spin:
 	jnz spin
 
 	pop %ebx
-	pop %eax
-
 	mov %ebp, %esp
 	pop %ebp
 	ret
@@ -31,8 +27,6 @@ spin:
 spin_unlock:
 	push %ebp
 	mov %esp, %ebp
-
-	push %eax
 	push %ebx
 
 	xor %eax, %eax
@@ -40,8 +34,6 @@ spin_unlock:
 	mov %eax, (%ebx)
 
 	pop %ebx
-	pop %eax
-
 	mov %ebp, %esp
 	pop %ebp
 	ret

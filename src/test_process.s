@@ -10,8 +10,6 @@ write:
 	mov %esp, %ebp
 
 	push %ebx
-	push %ecx
-	push %edx
 
 	mov $8, %eax
 	mov 8(%ebp), %ebx
@@ -19,8 +17,6 @@ write:
 	mov 16(%ebp), %edx
 	int $0x80
 
-	pop %edx
-	pop %ecx
 	pop %ebx
 
 	mov %ebp, %esp

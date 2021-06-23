@@ -1,7 +1,15 @@
-.text
+/*
+ * This file implements the system call stub, which is the code that is executed whenever a system
+ * call is used.
+ */
 
 .global syscall
 
+.section .text
+
+/*
+ * The system call stub.
+ */
 syscall:
 	cli
 	push %ebp

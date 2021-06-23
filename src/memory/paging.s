@@ -22,26 +22,25 @@ cr0_get:
  * (x86) Sets the given flags in the %cr0 register.
  */
 cr0_set:
-	push %eax
 	mov %cr0, %eax
-	or 8(%esp), %eax
+	or 4(%esp), %eax
 	mov %eax, %cr0
-	pop %eax
+
 	ret
 
 /*
  * (x86) Clears the given flags in the %cr0 register.
  */
 cr0_clear:
-	push %eax
 	push %ebx
+
 	mov %cr0, %eax
-	mov 12(%esp), %ebx
+	mov 8(%esp), %ebx
 	not %ebx
 	and %ebx, %eax
 	mov %eax, %cr0
+
 	pop %ebx
-	pop %eax
 	ret
 
 /*
@@ -66,7 +65,6 @@ cr3_get:
 paging_enable:
 	push %ebp
 	mov %esp, %ebp
-	push %eax
 
 	mov 8(%ebp), %eax
 	mov %eax, %cr3
@@ -74,7 +72,6 @@ paging_enable:
 	or $0x80010000, %eax
 	mov %eax, %cr0
 
-	pop %eax
 	mov %ebp, %esp
 	pop %ebp
 	ret
@@ -83,19 +80,17 @@ paging_enable:
  * (x86) Disables paging.
  */
 paging_disable:
-	push %eax
 	mov %cr0, %eax
 	and $(~0x80000000), %eax
 	mov %eax, %cr0
-	pop %eax
+
 	ret
 
 /*
  * (x86) Reloads the Translate Lookaside Buffer.
  */
 tlb_reload:
-	push %eax
 	movl %cr3, %eax
 	movl %eax, %cr3
-	pop %eax
+
 	ret

@@ -259,25 +259,30 @@ fn relocate_trampoline() {
 }
 
 /// Initializes CPU cores other than the main core.
-/// This function also disables the PIC.
+/// If more than one CPU core is present on the system, the PIC is disabled and the APIC is enabled
+/// instead.
 /// This function must be called **only once, at boot**.
 pub fn init_multicore() {
-	pic::disable();
-	apic::enable();
-
-	relocate_trampoline();
-
 	let curr_id = get_current();
 	let mut cores_guard = unsafe { // Safe because using Mutex
 		CPUS.lock()
 	};
 	let cores = cores_guard.get_mut();
-	for i in 0..cores.len() {
-		let cpu_guard = cores[i].lock();
-		let cpu = cpu_guard.get();
+	let cores_count = cores.len();
 
-		if cpu.apic_id != curr_id && cpu.can_enable() {
-			cpu.enable();
+	if cores_count > 1 {
+		pic::disable();
+		apic::enable();
+
+		relocate_trampoline();
+
+		for i in 0..cores_count {
+			let cpu_guard = cores[i].lock();
+			let cpu = cpu_guard.get();
+
+			if cpu.apic_id != curr_id && cpu.can_enable() {
+				cpu.enable();
+			}
 		}
 	}
 }
