@@ -22,6 +22,8 @@ const TRAMPOLINE_PTR: *mut c_void = 0x8000 as *mut c_void;
 /// The size of the trampoline code in bytes. This value can be a bit larger than required.
 const TRAMPOLINE_SIZE: usize = memory::PAGE_SIZE;
 
+/// The offset of the APIC Spurious Interrupt Vector register.
+const APIC_OFFSET_SIV: usize = 0xf0;
 /// The offset of the APIC error status register.
 const APIC_OFFSET_ERROR_STATUS: usize = 0x280;
 /// The offset of the APIC Interrupt Command Register register 0.
@@ -88,7 +90,16 @@ pub mod apic {
 	/// undefined.
 	/// This function is **not** thread-safe.
 	pub fn enable() {
-		// TODO
+		// TODO Place constant values into constants
+
+		msr::write(0x1b, (unsafe {
+			APIC_ADDR
+		}.unwrap() as u64 & 0xffff0000) | 0x800);
+
+		unsafe {
+			let siv = get_register(APIC_OFFSET_SIV);
+			ptr::write_volatile(siv, ptr::read_volatile(siv) | 0x100);
+		}
 	}
 
 	/// Tells whether the APIC is enabled.
