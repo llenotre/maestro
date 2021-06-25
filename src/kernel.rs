@@ -68,6 +68,7 @@ mod vga;
 use core::ffi::c_void;
 use core::panic::PanicInfo;
 use crate::file::path::Path;
+use crate::memory::dma;
 use crate::memory::vmem::VMem;
 use crate::process::Process;
 use crate::util::boxed::Box;
@@ -195,7 +196,7 @@ pub extern "C" fn kernel_main(magic: u32, multiboot_ptr: *const c_void) -> ! {
 
 	println!("Initializing ACPI...");
 	acpi::init();
-    if acpi::dma::map(&mut kernel_vmem).is_err() {
+    if dma::map(&mut kernel_vmem).is_err() {
         crate::kernel_panic!("Failed to map DMA zones!");
     }
 

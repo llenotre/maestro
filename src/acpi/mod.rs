@@ -10,10 +10,11 @@ use core::intrinsics::wrapping_add;
 use crate::cpu::CPU;
 use crate::cpu;
 use crate::errno::Errno;
+use crate::memory::dma::DMA;
+use crate::memory::dma;
 use crate::memory;
 use crate::time;
 use crate::util;
-use dma::DMA;
 use fadt::Fadt;
 use madt::Madt;
 use rsdt::Rsdt;
@@ -21,7 +22,6 @@ use rsdt::Rsdt;
 mod fadt;
 mod madt;
 mod rsdt;
-pub mod dma;
 
 /// The beginning of the zone to scan to get the RSDP.
 const SCAN_BEGIN: *const c_void = unsafe {
