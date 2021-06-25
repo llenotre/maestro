@@ -60,24 +60,16 @@ pub trait VMem: FailableClone {
 }
 
 /// Creates a new virtual memory context handler for the current architecture.
-pub fn new() -> Result::<Box::<dyn VMem>, Errno> {
-	Ok(Box::new(x86::X86VMem::new()?)? as Box::<dyn VMem>)
+pub fn new() -> Result<Box<dyn VMem>, Errno> {
+	Ok(Box::new(x86::X86VMem::new()?)? as Box<dyn VMem>)
 }
 
 /// Clones the virtual memory context handler `vmem`.
-pub fn clone(vmem: &Box::<dyn VMem>) -> Result::<Box::<dyn VMem>, Errno> {
+pub fn clone(vmem: &Box<dyn VMem>) -> Result<Box<dyn VMem>, Errno> {
 	let vmem = unsafe {
 		&*(vmem.as_ptr() as *const x86::X86VMem)
 	};
-	Ok(Box::new(vmem.failable_clone()?)? as Box::<dyn VMem>)
-}
-
-/// Creates and loads the kernel's virtual memory context handler, protecting its code from
-/// writing.
-pub fn kernel() -> Result<Box::<dyn VMem>, Errno> {
-	let kernel_vmem = new()?;
-	kernel_vmem.bind();
-	Ok(kernel_vmem)
+	Ok(Box::new(vmem.failable_clone()?)? as Box<dyn VMem>)
 }
 
 /// Tells whether the read-only pages protection is enabled.

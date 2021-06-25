@@ -68,7 +68,9 @@ mod vga;
 use core::ffi::c_void;
 use core::panic::PanicInfo;
 use crate::file::path::Path;
+use crate::memory::vmem::VMem;
 use crate::process::Process;
+use crate::util::boxed::Box;
 
 /// The kernel's name.
 const KERNEL_NAME: &str = "maestro";
@@ -131,6 +133,19 @@ mod io {
 	}
 }
 
+/// Initializes virtual memory.
+/// `acpi` tells whether ACPI has been enabled and if its DMA zones should be mapped.
+fn init_vmem() -> Box<dyn VMem> {
+	let kernel_vmem = memory::vmem::new();
+	if kernel_vmem.is_err() {
+		crate::kernel_panic!("Cannot initialize kernel virtual memory!", 0);
+	}
+
+    let kernel_vmem = kernel_vmem.unwrap();
+    kernel_vmem.bind();
+    kernel_vmem
+}
+
 extern "C" {
 	fn test_process();
 }
@@ -162,10 +177,7 @@ pub extern "C" fn kernel_main(magic: u32, multiboot_ptr: *const c_void) -> ! {
 	}
 	memory::alloc::init();
 	memory::malloc::init();
-	let kernel_vmem = memory::vmem::kernel();
-	if kernel_vmem.is_err() {
-		crate::kernel_panic!("Cannot initialize kernel virtual memory!", 0);
-	}
+    let mut kernel_vmem = init_vmem();
 
 	#[cfg(test)]
 	#[cfg(config_debug_test)]
@@ -177,12 +189,15 @@ pub extern "C" fn kernel_main(magic: u32, multiboot_ptr: *const c_void) -> ! {
 		halt();
 	}
 	let args_parser = args_parser.unwrap();
-	logger::init(args_parser.is_silent());
+	logger::set_silent(args_parser.is_silent());
 
 	println!("Booting Maestro kernel version {}", KERNEL_VERSION);
 
 	println!("Initializing ACPI...");
 	acpi::init();
+    if acpi::dma::map(&mut kernel_vmem).is_err() {
+        crate::kernel_panic!("Failed to map DMA zones!");
+    }
 
 	let cpu_count = cpu::get_count();
 	println!("{} CPUs are available", cpu_count);

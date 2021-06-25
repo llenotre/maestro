@@ -32,10 +32,6 @@ const APIC_OFFSET_ICR0: usize = 0x300;
 const APIC_OFFSET_ICR1: usize = 0x310;
 
 extern "C" {
-	fn msr_exist() -> u32;
-	fn msr_read(i: u32, lo: *mut u32, hi: *mut u32);
-	fn msr_write(i: u32, lo: u32, hi: u32);
-
 	fn get_current_apic() -> u32;
 
 	fn cpu_trampoline();
@@ -43,7 +39,11 @@ extern "C" {
 
 /// Model Specific Register (MSR) features.
 pub mod msr {
-	use super::*;
+    extern "C" {
+        fn msr_exist() -> u32;
+        fn msr_read(i: u32, lo: *mut u32, hi: *mut u32);
+        fn msr_write(i: u32, lo: u32, hi: u32);
+    }
 
 	/// Tells whether MSR exist.
 	pub fn exist() -> bool {
@@ -52,21 +52,17 @@ pub mod msr {
 		}
 	}
 
-	/// Reads the `i`th MSR and returns its value.
-	pub fn read(i: u32) -> u64 {
-		let mut lo = 0;
-		let mut hi = 0;
+	/// Reads the `i`th MSR and writes its value into `lo` and `hi`.
+	pub fn read(i: u32, lo: &mut u32, hi: &mut u32) {
 		unsafe {
-			msr_read(i, &mut lo, &mut hi);
+			msr_read(i, lo, hi);
 		}
-
-		((hi as u64) << 32) | (lo as u64)
 	}
 
-	/// Writes the `i`th MSR with value `val`.
-	pub fn write(i: u32, val: u64) {
+	/// Writes the `i`th MSR with values `lo` and `hi`.
+	pub fn write(i: u32, lo: u32, hi: u32) {
 		unsafe {
-			msr_write(i, (val & 0xffff) as _, ((val >> 32) & 0xffff) as _);
+			msr_write(i, lo, hi);
 		}
 	}
 }
@@ -75,14 +71,14 @@ pub mod msr {
 pub mod apic {
 	use super::*;
 
-	/// The APIC's virtual address.
+	/// The APIC's physical address.
 	static mut APIC_ADDR: Option<*mut c_void> = None;
 
 	/// Sets the APIC physical address.
 	/// This function is **not** thread-safe.
 	pub unsafe fn set_addr(addr: *mut c_void) {
-		// TODO Remap kernel? (since the APIC seems to be accessed through DMA)
-		APIC_ADDR = Some(memory::kern_to_virt(addr) as _);
+		// TODO Remap vmem? (since the APIC seems to be accessed through DMA)
+		APIC_ADDR = Some(addr);
 	}
 
 	/// Enables the APIC.
@@ -90,11 +86,11 @@ pub mod apic {
 	/// undefined.
 	/// This function is **not** thread-safe.
 	pub fn enable() {
+        let mut lo = 0;
+        let mut hi = 0;
 		// TODO Place constant values into constants
-
-		msr::write(0x1b, (unsafe {
-			APIC_ADDR
-		}.unwrap() as u64 & 0xffff0000) | 0x800);
+		msr::read(0x1b, &mut lo, &mut hi);
+		msr::write(0x1b, (lo & 0xffff0000) | 0x800, 0);
 
 		unsafe {
 			let siv = get_register(APIC_OFFSET_SIV);
@@ -113,7 +109,7 @@ pub mod apic {
 	/// undefined.
 	/// If the offset is invalid, the behaviour is undefined.
 	pub unsafe fn get_register(offset: usize) -> *mut u32 {
-		let ptr = (APIC_ADDR.unwrap() as usize + offset) as *mut u32;
+		let ptr = (memory::kern_to_virt(APIC_ADDR.unwrap()) as usize + offset) as *mut u32;
 		debug_assert!(util::is_aligned(ptr as _, 16));
 		ptr
 	}

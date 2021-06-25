@@ -9,9 +9,11 @@ use core::ffi::c_void;
 use core::intrinsics::wrapping_add;
 use crate::cpu::CPU;
 use crate::cpu;
+use crate::errno::Errno;
 use crate::memory;
 use crate::time;
 use crate::util;
+use dma::DMA;
 use fadt::Fadt;
 use madt::Madt;
 use rsdt::Rsdt;
@@ -19,6 +21,7 @@ use rsdt::Rsdt;
 mod fadt;
 mod madt;
 mod rsdt;
+pub mod dma;
 
 /// The beginning of the zone to scan to get the RSDP.
 const SCAN_BEGIN: *const c_void = unsafe {
@@ -136,6 +139,69 @@ unsafe fn find_rsdp() -> Option<&'static mut Rsdp> {
 	None
 }
 
+/// Reads the given RSDT and initializes ACPI accordingly.
+fn read_rsdt(rsdt: &Rsdt) -> Result<(), Errno> {
+    if let Some(madt) = rsdt.get_table::<Madt>() {
+        let apic_addr = madt.local_apic_addr as *mut c_void;
+
+        madt.foreach_entry(| e: &madt::EntryHeader | {
+            match e.get_type() {
+                madt::ENTRY_PROCESSOR_LOCAL_APIC => {
+                    let e = unsafe {
+                        &*(e as *const _ as *const madt::EntryProcessorLocalAPIC)
+                    };
+
+                    if cpu::add_core(CPU::new(e.id as _, e.apic_id as _, e.flags)).is_err() {
+                        crate::kernel_panic!("Error while enumerating CPUs");
+                    }
+                },
+
+                madt::ENTRY_LOCAL_APIC_ADDRESS_OVERRIDE => {
+                    if util::ptr_size() == 8 {
+                        // TODO Re-set apic_addr
+                        todo!();
+                    }
+                },
+
+                _ => {},
+            }
+        });
+
+        unsafe {
+            cpu::apic::set_addr(apic_addr as _);
+        }
+        dma::register(DMA::new(apic_addr, 1, apic_addr))?;
+
+        madt.foreach_entry(| e: &madt::EntryHeader | {
+            match e.get_type() {
+                madt::ENTRY_IO_APIC => {
+                    let e = unsafe {
+                        &*(e as *const _ as *const madt::EntryIOAPIC)
+                    };
+
+                    let list_mutex = cpu::list();
+                    let mut list_guard = list_mutex.lock();
+                    let list = list_guard.get_mut();
+
+                    for i in 0..list.len() {
+                        let mut guard = list[i].lock();
+                        let cpu = guard.get_mut();
+
+                        if cpu.get_apic_id() == e.io_apic_id as _ {
+                            cpu.set_io_apic_addr(Some(e.io_apic_addr as _));
+                            break;
+                        }
+                    }
+                },
+
+                _ => {},
+            }
+        });
+    }
+
+    Ok(())
+}
+
 /// Initializes ACPI.
 pub fn init() {
 	let rsdp = unsafe {
@@ -153,60 +219,9 @@ pub fn init() {
 			crate::kernel_panic!("Invalid ACPI structure!");
 		}
 
-		if let Some(madt) = rsdt.get_table::<Madt>() {
-			unsafe {
-				cpu::apic::set_addr(madt.local_apic_addr as _);
-			}
-
-			madt.foreach_entry(| e: &madt::EntryHeader | {
-				match e.get_type() {
-					madt::ENTRY_PROCESSOR_LOCAL_APIC => {
-						let e = unsafe {
-							&*(e as *const _ as *const madt::EntryProcessorLocalAPIC)
-						};
-
-						if cpu::add_core(CPU::new(e.id as _, e.apic_id as _, e.flags)).is_err() {
-							crate::kernel_panic!("Error while enumerating CPUs");
-						}
-					},
-
-					madt::ENTRY_LOCAL_APIC_ADDRESS_OVERRIDE => {
-						if util::ptr_size() == 8 {
-							// TODO
-							todo!();
-						}
-					},
-
-					_ => {},
-				}
-			});
-
-			madt.foreach_entry(| e: &madt::EntryHeader | {
-				match e.get_type() {
-					madt::ENTRY_IO_APIC => {
-						let e = unsafe {
-							&*(e as *const _ as *const madt::EntryIOAPIC)
-						};
-
-						let list_mutex = cpu::list();
-						let mut list_guard = list_mutex.lock();
-						let list = list_guard.get_mut();
-
-						for i in 0..list.len() {
-							let mut guard = list[i].lock();
-							let cpu = guard.get_mut();
-
-							if cpu.get_apic_id() == e.io_apic_id as _ {
-								cpu.set_io_apic_addr(Some(e.io_apic_addr as _));
-								break;
-							}
-						}
-					},
-
-					_ => {},
-				}
-			});
-		}
+        if read_rsdt(&rsdt).is_err() {
+			crate::kernel_panic!("An error happenned while initializing ACPI");
+        }
 
 		century_register = {
 			if let Some(fadt) = rsdt.get_table::<Fadt>() {

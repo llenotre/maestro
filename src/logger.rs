@@ -13,9 +13,8 @@ const LOGS_SIZE: usize = 1048576;
 /// The kernel's logger.
 static mut LOGGER: Mutex<Logger> = Mutex::new(Logger::new());
 
-/// Initializes logging.
-/// `silent` tells whether the logger is silent.
-pub fn init(silent: bool) {
+/// Tells whether the logger must be silent.
+pub fn set_silent(silent: bool) {
 	let mutex = unsafe { // Safe because using Mutex
 		&mut LOGGER
 	};

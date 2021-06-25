@@ -32,11 +32,11 @@ msr_read:
 	push %ebp
 	mov %esp, %ebp
 
-	mov 16(%ebp), %ecx # msr
+	mov 8(%ebp), %ecx # msr
 	rdmsr
 	mov 12(%ebp), %ecx # lo
 	mov %eax, (%ecx)
-	mov 8(%ebp), %ecx # hi
+	mov 16(%ebp), %ecx # hi
 	mov %edx, (%ecx)
 
 	mov %ebp, %esp
@@ -50,9 +50,9 @@ msr_write:
 	push %ebp
 	mov %esp, %ebp
 
-	mov 16(%ebp), %ecx # msr
+	mov 8(%ebp), %ecx # msr
 	mov 12(%ebp), %eax # lo
-	mov 8(%ebp), %edx # hi
+	mov 16(%ebp), %edx # hi
 	wrmsr
 
 	mov %ebp, %esp
