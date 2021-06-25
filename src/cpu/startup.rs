@@ -1,12 +1,16 @@
-//! This module implements the function to be called when a new CPU (other than the main one) starts.
+//! This module implements the function to be called when a new CPU (other than the main one)
+//! starts.
 
 use crate::cpu;
 
-/// This function is called for each CPU that start.
+/// This function is called for each CPU that starts.
 #[no_mangle]
 extern "C" fn cpu_startup() -> ! {
-	crate::println!("Hello from CPU {}", cpu::get_current()); // TODO rm
-	// TODO Wait until the scheduler is ready, then enable interrupts to execute processes
+	idt::bind();
+	// TODO Bind the kernel virtual memory context handler to the current CPU
 
-	crate::halt();
+	crate::println!("Hello from CPU {}", cpu::get_current()); // TODO rm
+	crate::halt(); // TODO rm
+
+	// TODO Wait until the scheduler is ready, then enable interrupts to execute processes
 }

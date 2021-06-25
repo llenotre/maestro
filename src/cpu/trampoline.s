@@ -6,12 +6,16 @@
  * The code will be relocated at an address at which it can be accessed in real mode.
  */
 
+.set TRAMPOLINE_OFFSET, 0x8000
+
 .global cpu_trampoline
 
 .extern cpu_startup
 
 .section .text
 
+.set cpu_trampoline, TRAMPOLINE_OFFSET
+# The CPU trampoline
 cpu_trampoline:
 	cli
 	cld
@@ -21,8 +25,8 @@ cpu_trampoline:
 	or $1, %al
 	mov %eax, %cr0
 
-	jmp $0x8, $complete_flush
-complete_flush:
+	jmp $0x8, $(TRAMPOLINE_OFFSET + (trampoline_complete_flush - cpu_trampoline))
+trampoline_complete_flush:
 	mov $0x10, %ax
 	mov %ax, %ds
 	mov %ax, %es
@@ -30,12 +34,15 @@ complete_flush:
 	mov %ax, %gs
 	mov %ax, %ss
 
-.align 32
-init_stack:
+	# Getting the CPU core id
 	mov $1, %eax
 	cpuid
 	shr $24, %ebx
 
+	# Stack initialization
 	# TODO Setup stack
+
+	# Remapping virtual memory
+	# TODO Remap vmem
 
 	jmp cpu_startup

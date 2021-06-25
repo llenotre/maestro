@@ -8,6 +8,7 @@ use core::ffi::c_void;
 use core::mem::transmute;
 use core::ptr;
 use crate::errno::Errno;
+use crate::memory::vmem;
 use crate::memory;
 use crate::time;
 use crate::util::container::vec::Vec;
@@ -254,14 +255,16 @@ pub fn list() -> &'static mut Mutex<Vec<Mutex<CPU>>> {
 
 /// Copies the trampoline code to its destination address to ensure it is accessible from real mode
 /// CPUs.
-fn relocate_trampoline() {
+fn prepare_trampoline() {
 	let src = unsafe {
 		transmute::<unsafe extern "C" fn(), *const c_void>(cpu_trampoline)
 	};
 	let dest = memory::kern_to_virt(TRAMPOLINE_PTR) as _;
 
 	unsafe {
-		ptr::copy_nonoverlapping(src, dest, TRAMPOLINE_SIZE);
+		vmem::write_lock_wrap(|| {
+			ptr::copy_nonoverlapping(src, dest, TRAMPOLINE_SIZE);
+		});
 	}
 }
 
@@ -281,7 +284,7 @@ pub fn init_multicore() {
 		pic::disable();
 		apic::enable();
 
-		relocate_trampoline();
+		prepare_trampoline();
 
 		for i in 0..cores_count {
 			let cpu_guard = cores[i].lock();

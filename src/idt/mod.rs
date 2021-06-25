@@ -163,7 +163,22 @@ fn get_c_fn_ptr(f: unsafe extern "C" fn()) -> *const c_void {
 	}
 }
 
-/// Initializes the IDT. This function must be called only once at kernel initialization.
+/// Binds the IDT to the current CPU core. This function requires `init` to be called by the main
+/// CPU first.
+pub fn bind() {
+	let idt = InterruptDescriptorTable {
+		size: (core::mem::size_of::<InterruptDescriptor>() * ENTRIES_COUNT - 1) as u16,
+		offset: unsafe {
+			&ID
+		} as *const _ as u32,
+	};
+	unsafe {
+		idt_load(&idt as *const _ as *const _);
+	}
+}
+
+/// Initializes the IDT and binds it to the current CPU. This function must be called only once at
+/// kernel initialization.
 /// This function also enables the PIC.
 /// When returning, maskable interrupts are disabled by default.
 pub fn init() {
@@ -227,15 +242,7 @@ pub fn init() {
 		id[SYSCALL_ENTRY] = create_id(get_c_fn_ptr(syscall), 0x8, 0xee);
 	}
 
-	let idt = InterruptDescriptorTable {
-		size: (core::mem::size_of::<InterruptDescriptor>() * ENTRIES_COUNT - 1) as u16,
-		offset: unsafe {
-			&ID
-		} as *const _ as u32,
-	};
-	unsafe {
-		idt_load(&idt as *const _ as *const _);
-	}
+	bind();
 }
 
 /// Tells whether interruptions are enabled.
