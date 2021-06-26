@@ -2,6 +2,7 @@
 //! starts.
 
 use crate::cpu;
+use crate::idt;
 
 /// This function is called for each CPU that starts.
 #[no_mangle]
