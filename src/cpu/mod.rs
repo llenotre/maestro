@@ -5,9 +5,11 @@
 //! mode, the trampoline code is required to be assembly code.
 
 use core::ffi::c_void;
+use core::mem::size_of;
 use core::mem::transmute;
 use core::ptr;
 use crate::errno::Errno;
+use crate::memory::malloc;
 use crate::memory::vmem;
 use crate::memory;
 use crate::time;
@@ -22,6 +24,8 @@ pub mod pic;
 const TRAMPOLINE_PTR: *mut c_void = 0x8000 as *mut c_void;
 /// The size of the trampoline code in bytes. This value can be a bit larger than required.
 const TRAMPOLINE_SIZE: usize = memory::PAGE_SIZE;
+/// The size of a core's startup stack.
+const CORE_STACK_SIZE: usize = memory::PAGE_SIZE * 8;
 
 /// The offset of the APIC Spurious Interrupt Vector register.
 const APIC_OFFSET_SIV: usize = 0xf0;
@@ -36,6 +40,7 @@ extern "C" {
 	fn get_current_apic() -> u32;
 
 	fn cpu_trampoline();
+	static mut trampoline_stacks: u32;
 }
 
 /// Model Specific Register (MSR) features.
@@ -255,7 +260,35 @@ pub fn list() -> &'static mut Mutex<Vec<Mutex<CPU>>> {
 
 /// Copies the trampoline code to its destination address to ensure it is accessible from real mode
 /// CPUs.
-fn prepare_trampoline() {
+/// The function also allocates stacks for each cores.
+/// `cores_count` is the number of cores on the system.
+fn prepare_trampoline(cores_count: usize) -> Result<(), Errno> {
+	let stacks = unsafe {
+		malloc::alloc(cores_count * size_of::<u32>())? as *mut u32
+	};
+	for i in 0..cores_count {
+		let res = unsafe {
+			malloc::alloc(CORE_STACK_SIZE)
+		};
+
+		if let Ok(ptr) = res {
+			unsafe {
+				*stacks.add(i) = ptr as _;
+			}
+		} else {
+			for j in 0..i {
+				unsafe {
+					malloc::free(*stacks.add(j) as _);
+				}
+			}
+
+			unsafe {
+				malloc::free(stacks as _);
+			}
+			return Err(res.unwrap_err());
+		}
+	}
+
 	let src = unsafe {
 		transmute::<unsafe extern "C" fn(), *const c_void>(cpu_trampoline)
 	};
@@ -264,8 +297,13 @@ fn prepare_trampoline() {
 	unsafe {
 		vmem::write_lock_wrap(|| {
 			ptr::copy_nonoverlapping(src, dest, TRAMPOLINE_SIZE);
+
+			// TODO Free when every cores are ready?
+			trampoline_stacks = stacks as u32;
 		});
 	}
+
+	Ok(())
 }
 
 /// Initializes CPU cores other than the main core.
@@ -284,7 +322,9 @@ pub fn init_multicore() {
 		pic::disable();
 		apic::enable();
 
-		prepare_trampoline();
+		if prepare_trampoline(cores_count).is_err() {
+			crate::kernel_panic!("Failed to initialize multicore");
+		}
 
 		for i in 0..cores_count {
 			let cpu_guard = cores[i].lock();

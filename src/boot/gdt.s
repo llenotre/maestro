@@ -65,7 +65,7 @@ switch_protected:
 	or $1, %al
 	mov %eax, %cr0
 
-	jmp $0x8, $complete_flush
+	ljmp $0x8, $complete_flush
 complete_flush:
 	mov $0x10, %ax
 	mov %ax, %ds
