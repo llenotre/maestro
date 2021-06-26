@@ -1,5 +1,7 @@
 //! A rational number is a number which can be represented as the fraction of two integers: `a / b`
 
+use core::cmp::Ordering;
+use core::cmp::PartialEq;
 use core::ops::Add;
 use core::ops::AddAssign;
 use core::ops::Div;
@@ -21,7 +23,7 @@ pub struct Rational {
 
 impl Rational {
 	/// Creates an instance from a given integer `n`.
-	pub fn from_integer(n: i64) -> Self {
+	pub const fn from_integer(n: i64) -> Self {
 		Self {
 			a: n,
 			b: 1,
@@ -29,7 +31,8 @@ impl Rational {
 	}
 
 	/// Creates an instance from two integers `a` and `b` such as the number equals `a / b`.
-	pub fn from_integers(a: i64, b: i64) -> Self {
+	/// If `b` is zero, the behaviour is undefined.
+	pub const fn from_integers(a: i64, b: i64) -> Self {
 		Self {
 			a,
 			b,
@@ -44,6 +47,11 @@ impl Rational {
 	/// Returns the denominator of the number.
 	pub fn get_denominator(&self) -> i64 {
 		self.b
+	}
+
+	/// Converts the value to the nearest integer value.
+	pub fn as_integer(&self) -> i64 {
+		self.a / self.b
 	}
 }
 
@@ -179,5 +187,17 @@ impl MulAssign for Rational {
 impl DivAssign for Rational {
 	fn div_assign(&mut self, other: Self) {
 		*self = *self / other;
+	}
+}
+
+impl PartialEq for Rational {
+	fn eq(&self, other: &Self) -> bool {
+		self.a == other.a && self.b == other.b
+	}
+}
+
+impl PartialOrd for Rational {
+	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+		Some((self.a * other.b).cmp(&(other.a * self.b)))
 	}
 }

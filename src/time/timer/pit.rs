@@ -4,10 +4,7 @@
 use crate::idt;
 use crate::io;
 use crate::util::lock::mutex::*;
-use crate::util::math;
-
-/// The type representing the frequency of the PIT in Hertz.
-pub type Frequency = u32;
+use crate::util::math::rational::Rational;
 
 /// PIT channel number 0.
 const CHANNEL_0: u16 = 0x40;
@@ -53,10 +50,10 @@ const MODE_4: u8 = 0x4;
 const MODE_5: u8 = 0x5;
 
 /// The base frequency of the PIT.
-const BASE_FREQUENCY: Frequency = 1193180;
+const BASE_FREQUENCY: Rational = Rational::from_integer(1193180);
 
 /// The current frequency of the PIT.
-static mut CURRENT_FREQUENCY: Mutex::<Frequency> = Mutex::new(0);
+static mut CURRENT_FREQUENCY: Mutex::<Rational> = Mutex::new(Rational::from_integer(0));
 
 /// Initializes the PIT.
 /// This function disables interrupts.
@@ -82,17 +79,19 @@ pub fn set_value(count: u16) {
 
 /// Sets the current frequency of the PIT to `frequency` in hertz.
 /// This function disables interrupts.
-pub fn set_frequency(frequency: Frequency) {
+pub fn set_frequency(frequency: Rational) {
 	let m = unsafe { // Safe because using a Mutex
 		&mut CURRENT_FREQUENCY
 	};
 	let mut guard = MutexGuard::new(m);
 	*guard.get_mut() = frequency;
 
-	let mut c = if frequency != 0 {
-		math::ceil_division(BASE_FREQUENCY, frequency)
-	} else {
-		0
+	let mut c = {
+		if frequency != From::from(0) {
+			(BASE_FREQUENCY / frequency).as_integer()
+		} else {
+			0
+		}
 	};
 	c &= 0xffff;
 	if c & !0xffff != 0 {
