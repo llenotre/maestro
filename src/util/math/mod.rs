@@ -5,6 +5,8 @@ use core::intrinsics::wrapping_add;
 use core::intrinsics::wrapping_mul;
 use crate::util;
 
+pub mod rational;
+
 /// Clamps the given value `n` between `min` and `max`.
 pub fn clamp<T: PartialOrd>(n: T, min: T, max: T) -> T {
 	if n < min {
