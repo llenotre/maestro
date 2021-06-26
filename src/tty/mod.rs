@@ -8,7 +8,7 @@ mod ansi;
 use core::cmp::*;
 use core::mem::MaybeUninit;
 use crate::memory::vmem;
-use crate::pit;
+use crate::time::timer::pit;
 use crate::util::lock::mutex::*;
 use crate::util;
 use crate::vga;

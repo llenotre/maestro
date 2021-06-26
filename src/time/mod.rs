@@ -1,6 +1,7 @@
 //! This module handles time-releated features.
-//! The kernel stores a list of clock sources. A clock source is an object that allow to get the
-//! current timestamp.
+//!
+//! A clock source is an object that allow to get the current timestamp.
+//! A timer allows to interrupt the system at a specified frequency. Delay functions work using those.
 
 use crate::errno::Errno;
 use crate::util::boxed::Box;
@@ -8,6 +9,7 @@ use crate::util::container::vec::Vec;
 use crate::util::lock::mutex::*;
 
 pub mod cmos;
+pub mod timer;
 
 /// Type representing a timestamp.
 pub type Timestamp = u32;

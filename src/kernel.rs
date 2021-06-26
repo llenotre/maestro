@@ -52,7 +52,6 @@ mod module;
 mod multiboot;
 #[macro_use]
 mod panic;
-mod pit;
 #[macro_use]
 mod print;
 mod process;
@@ -166,7 +165,7 @@ pub extern "C" fn kernel_main(magic: u32, multiboot_ptr: *const c_void) -> ! {
 	}
 
 	idt::init();
-	pit::init();
+	time::timer::pit::init();
 	event::init();
 
 	// TODO CPUID
