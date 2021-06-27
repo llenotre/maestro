@@ -5,7 +5,7 @@ use crate::util::math::rational::Rational;
 pub mod divider;
 pub mod pit;
 
-/// A timer is an object which calls a given function at a given frequency.
+/// A timer is an which executes an action at a given frequency.
 pub trait Timer {
 	/// Returns the name of the timer.
 	fn get_name(&self) -> &str;
@@ -18,5 +18,7 @@ pub trait Timer {
 	/// frequency to the closest supported. To get the exact frequency, one should use
 	/// `get_curr_frequency` after setting it.
 	/// If the given frequency is negative, the behaviour is undefined.
-	fn set_curr_frequency(&self, frequency: Rational);
+	fn set_curr_frequency(&mut self, frequency: Rational);
 }
+
+// TODO Add a ticker trait? To allow listening to a timer

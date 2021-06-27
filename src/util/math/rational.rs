@@ -201,3 +201,7 @@ impl PartialOrd for Rational {
 		Some((self.a * other.b).cmp(&(other.a * self.b)))
 	}
 }
+
+// TODO Add printing function
+
+// TODO Add unit tests

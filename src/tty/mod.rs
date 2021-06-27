@@ -8,7 +8,6 @@ mod ansi;
 use core::cmp::*;
 use core::mem::MaybeUninit;
 use crate::memory::vmem;
-use crate::time::timer::pit;
 use crate::util::lock::mutex::*;
 use crate::util;
 use crate::vga;
@@ -297,7 +296,7 @@ impl TTY {
 	pub fn putchar(&mut self, c: u8) {
 		match c {
 			0x07 => {
-				pit::beep();
+				// TODO Make the bell ring
 			},
 			0x08 => {
 				// TODO Backspace
