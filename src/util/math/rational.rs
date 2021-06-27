@@ -11,9 +11,12 @@ use core::ops::MulAssign;
 use core::ops::Neg;
 use core::ops::Sub;
 use core::ops::SubAssign;
+use crate::util::math;
+
+// FIXME: Operations can overflow
 
 /// Structure implementing the representing a rational number.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct Rational {
 	/// The numerator.
 	a: i64,
@@ -53,6 +56,18 @@ impl Rational {
 	pub fn as_integer(&self) -> i64 {
 		self.a / self.b
 	}
+
+	/// Reduces the fraction so that `a / b` becomes irreducible.
+	pub fn reduce(&mut self) {
+		let gcd = math::gcd(self.a, self.b);
+		self.a /= gcd;
+		self.b /= gcd;
+
+		if self.b < 0 {
+			self.a = -self.a;
+			self.b = -self.b;
+		}
+	}
 }
 
 impl From<i64> for Rational {
@@ -74,11 +89,12 @@ impl Add for Rational {
 	type Output = Self;
 
 	fn add(self, other: Self) -> Self {
-		// TODO Reduce
-		Self {
+		let mut s = Self {
 			a: (self.a * other.b) + (other.a * self.b),
 			b: self.b * other.b,
-		}
+		};
+		s.reduce();
+		s
 	}
 }
 
@@ -86,11 +102,12 @@ impl Add<i64> for Rational {
 	type Output = Self;
 
 	fn add(self, other: i64) -> Self {
-		// TODO Reduce
-		Self {
+		let mut s = Self {
 			a: self.a + (other * self.b),
 			b: self.b,
-		}
+		};
+		s.reduce();
+		s
 	}
 }
 
@@ -98,11 +115,12 @@ impl Sub for Rational {
 	type Output = Self;
 
 	fn sub(self, other: Self) -> Self {
-		// TODO Reduce
-		Self {
+		let mut s = Self {
 			a: (self.a * other.b) - (other.a * self.b),
 			b: self.b * other.b,
-		}
+		};
+		s.reduce();
+		s
 	}
 }
 
@@ -110,11 +128,12 @@ impl Sub<i64> for Rational {
 	type Output = Self;
 
 	fn sub(self, other: i64) -> Self {
-		// TODO Reduce
-		Self {
+		let mut s = Self {
 			a: self.a - (other * self.b),
 			b: self.b,
-		}
+		};
+		s.reduce();
+		s
 	}
 }
 
@@ -122,11 +141,12 @@ impl Mul for Rational {
 	type Output = Self;
 
 	fn mul(self, other: Self) -> Self {
-		// TODO Reduce
-		Self {
+		let mut s = Self {
 			a: self.a * other.a,
 			b: self.b * other.b,
-		}
+		};
+		s.reduce();
+		s
 	}
 }
 
@@ -134,11 +154,12 @@ impl Mul<i64> for Rational {
 	type Output = Self;
 
 	fn mul(self, other: i64) -> Self {
-		// TODO Reduce
-		Self {
+		let mut s = Self {
 			a: self.a * other,
 			b: self.b,
-		}
+		};
+		s.reduce();
+		s
 	}
 }
 
@@ -146,11 +167,12 @@ impl Div for Rational {
 	type Output = Self;
 
 	fn div(self, other: Self) -> Self {
-		// TODO Reduce
-		Self {
+		let mut s = Self {
 			a: self.a * other.b,
 			b: self.b * other.a,
-		}
+		};
+		s.reduce();
+		s
 	}
 }
 
@@ -158,11 +180,12 @@ impl Div<i64> for Rational {
 	type Output = Self;
 
 	fn div(self, other: i64) -> Self {
-		// TODO Reduce
-		Self {
+		let mut s = Self {
 			a: self.a,
 			b: self.b * other,
-		}
+		};
+		s.reduce();
+		s
 	}
 }
 
@@ -190,6 +213,8 @@ impl DivAssign for Rational {
 	}
 }
 
+impl Eq for Rational {}
+
 impl PartialEq for Rational {
 	fn eq(&self, other: &Self) -> bool {
 		self.a == other.a && self.b == other.b
@@ -204,4 +229,66 @@ impl PartialOrd for Rational {
 
 // TODO Add printing function
 
-// TODO Add unit tests
+#[cfg(test)]
+mod test {
+	use super::*;
+
+	#[test_case]
+	fn rational_add() {
+		assert_eq!(Rational::from(0) + Rational::from(0), Rational::from(0));
+		assert_eq!(Rational::from(1) + Rational::from(1), Rational::from(2));
+		assert_eq!(Rational::from(1) + Rational::from(2), Rational::from(3));
+		assert_eq!(Rational::from(1) + Rational::from(-1), Rational::from(0));
+
+		assert_eq!(Rational::from_integers(1, 2) + Rational::from_integers(1, 2),
+			Rational::from(1));
+		assert_eq!(Rational::from_integers(1, 3) + Rational::from_integers(2, 3),
+			Rational::from(1));
+		assert_eq!(Rational::from_integers(1, 2) + Rational::from_integers(1, 3),
+			Rational::from_integers(5, 6));
+	}
+
+	#[test_case]
+	fn rational_sub() {
+		assert_eq!(Rational::from(0) - Rational::from(0), Rational::from(0));
+		assert_eq!(Rational::from(1) - Rational::from(1), Rational::from(0));
+		assert_eq!(Rational::from(1) - Rational::from(2), Rational::from(-1));
+		assert_eq!(Rational::from(1) - Rational::from(-1), Rational::from(2));
+
+		assert_eq!(Rational::from_integers(1, 2) - Rational::from_integers(1, 2),
+			Rational::from(0));
+		assert_eq!(Rational::from_integers(1, 3) - Rational::from_integers(2, 3),
+			Rational::from_integers(-1, 3));
+		assert_eq!(Rational::from_integers(1, 2) - Rational::from_integers(1, 3),
+			Rational::from_integers(1, 6));
+	}
+
+	#[test_case]
+	fn rational_mul() {
+		assert_eq!(Rational::from(0) * Rational::from(0), Rational::from(0));
+		assert_eq!(Rational::from(1) * Rational::from(1), Rational::from(1));
+		assert_eq!(Rational::from(1) * Rational::from(2), Rational::from(2));
+		assert_eq!(Rational::from(1) * Rational::from(-1), Rational::from(-1));
+
+		assert_eq!(Rational::from_integers(1, 2) * Rational::from_integers(1, 2),
+			Rational::from_integers(1, 4));
+		assert_eq!(Rational::from_integers(1, 3) * Rational::from_integers(2, 3),
+			Rational::from_integers(2, 9));
+		assert_eq!(Rational::from_integers(1, 2) * Rational::from_integers(1, 3),
+			Rational::from_integers(1, 6));
+	}
+
+	#[test_case]
+	fn rational_div() {
+		assert_eq!(Rational::from(1) / Rational::from(1), Rational::from(1));
+		assert_eq!(Rational::from(1) / Rational::from(2), Rational::from_integers(1, 2));
+		assert_eq!(Rational::from(1) / Rational::from(-1), Rational::from_integers(1, -1));
+
+		assert_eq!(Rational::from_integers(1, 2) / Rational::from_integers(1, 2),
+			Rational::from(1));
+		assert_eq!(Rational::from_integers(1, 3) / Rational::from_integers(2, 3),
+			Rational::from_integers(1, 2));
+		assert_eq!(Rational::from_integers(1, 2) / Rational::from_integers(1, 3),
+			Rational::from_integers(3, 2));
+	}
+}

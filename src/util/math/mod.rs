@@ -67,6 +67,7 @@ pub fn log2<T>(n: T) -> T
 	}
 }
 
+// TODO Make documentation clearer
 /// Computes a linear interpolation over integers.
 /// The function computes the interpolation coefficient relative to the parameters `x`, `a_x` and
 /// `b_x`.
@@ -87,6 +88,21 @@ pub fn integer_linear_interpolation<T>(x: T, a_x: T, a_y: T, b_x: T, b_y: T) -> 
 /// `a`, `c` and `m` are hyperparameters use as follows: (a * x + c) % m.
 pub fn pseudo_rand(x: u32, a: u32, c: u32, m: u32) -> u32 {
 	(wrapping_add(wrapping_mul(a, x), c)) % m
+}
+
+/// Returns the Greatest Common Divider of the two given numbers.
+pub fn gcd<T>(mut a: T, mut b: T) -> T
+	where T: Clone
+		+ From<u8>
+		+ core::cmp::PartialEq
+		+ core::ops::Rem<Output = T> {
+	while b != T::from(0) {
+		let r = a % b.clone();
+		a = b;
+		b = r;
+	}
+
+	return a;
 }
 
 #[cfg(test)]
@@ -128,6 +144,15 @@ mod test {
 		assert_eq!(pow::<u32>(10, 3), 1000);
 		assert_eq!(pow::<u32>(10, 4), 10000);
 		assert_eq!(pow::<u32>(10, 5), 100000);
+	}
+
+	#[test_case]
+	fn gcd() {
+		assert_eq!(gcd(2, 2), 2);
+		assert_eq!(gcd(4, 2), 2);
+		assert_eq!(gcd(4, 4), 4);
+		assert_eq!(gcd(8, 12), 4);
+		assert_eq!(gcd(48, 18), 6);
 	}
 
 	// TODO Test every functions
