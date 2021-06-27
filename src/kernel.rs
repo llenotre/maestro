@@ -165,7 +165,7 @@ pub extern "C" fn kernel_main(magic: u32, multiboot_ptr: *const c_void) -> ! {
 	}
 
 	idt::init();
-	let _pit = core::mem::ManuallyDrop::new(time::timer::pit::PITTimer::new(0)); // TODO
+	let _pit = core::mem::ManuallyDrop::new(time::timer::pit::PITTimer::new(0).unwrap()); // TODO
 	event::init();
 
 	// TODO CPUID

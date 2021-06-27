@@ -4,6 +4,7 @@
 use crate::idt;
 use crate::io;
 use crate::time::timer::Timer;
+use crate::util::lock::mutex::Mutex;
 use crate::util::math::rational::Rational;
 
 // TODO Recheck flags
@@ -21,43 +22,46 @@ const PIT_COMMAND: u16 = 0x43;
 const BEEPER_ENABLE_COMMAND: u8 = 0x61;
 
 /// Select PIT channel 0.
-const SELECT_CHANNEL_0: u8 = 0x0;
+const SELECT_CHANNEL_0: u8 = 0b00 << 6;
 /// Select PIT channel 1.
-const SELECT_CHANNEL_1: u8 = 0x40;
+const SELECT_CHANNEL_1: u8 = 0b01 << 6;
 /// Select PIT channel 2.
-const SELECT_CHANNEL_2: u8 = 0x80;
+const SELECT_CHANNEL_2: u8 = 0b10 << 6;
 /// TODO doc
-const READ_BACK_COMMAND: u8 = 0xc0;
+const READ_BACK_COMMAND: u8 = 0b11 << 6;
 
 /// TODO doc
-const ACCESS_LATCH_COUNT_VALUE: u8 = 0x0;
+const ACCESS_LATCH_COUNT_VALUE: u8 = 0b00 << 4;
 /// TODO doc
-const ACCESS_LOBYTE: u8 = 0x10;
+const ACCESS_LOBYTE: u8 = 0b01 << 4;
 /// TODO doc
-const ACCESS_HIBYTE: u8 = 0x20;
+const ACCESS_HIBYTE: u8 = 0b10 << 4;
 /// TODO doc
-const ACCESS_LOBYTE_HIBYTE: u8 = 0x30;
+const ACCESS_LOBYTE_HIBYTE: u8 = 0b11 << 4;
 
 /// Interrupt on terminal count.
-const MODE_0: u8 = 0x0;
+const MODE_0: u8 = 0b000 << 1;
 /// Hardware re-triggerable one-shot.
-const MODE_1: u8 = 0x1;
+const MODE_1: u8 = 0b001 << 1;
 /// Rate generator.
-const MODE_2: u8 = 0x2;
+const MODE_2: u8 = 0b010 << 1;
 /// Square wave generator.
-const MODE_3: u8 = 0x3;
+const MODE_3: u8 = 0b011 << 1;
 /// Software triggered strobe.
-const MODE_4: u8 = 0x4;
+const MODE_4: u8 = 0b100 << 1;
 /// Hardware triggered strobe.
-const MODE_5: u8 = 0x5;
+const MODE_5: u8 = 0b101 << 1;
 
 /// Tells whether the BCD mode is enabled.
-const BCD_MODE: u8 = 0x1;
+const BCD_MODE: u8 = 0b1;
 
 /// The base frequency of the PIT.
-const BASE_FREQUENCY: Rational = Rational::from_integer(1193180);
+const BASE_FREQUENCY: Rational = Rational::from_integer(1193182);
 
-/// Structure representing a timer using the PIT.
+/// Array telling which PIT channels are bound.
+static mut USED: Mutex<[bool; 3]> = Mutex::new([false; 3]);
+
+/// Structure representing a timer using the PIT. Each instance is handling one channel.
 pub struct PITTimer {
 	/// The channel ID.
 	channel: u8,
@@ -72,7 +76,15 @@ impl PITTimer {
 	/// If the timer cannot be created (for example, if already bound to the specified channel, or
 	/// if the channel doesn't exist), the function returns `None`.
 	pub fn new(channel: u8) -> Option<Self> {
-		// TODO check whether the channel is already bound
+		let mut guard = unsafe { // Safe because using Mutex
+			USED.lock()
+		};
+		let used_array = guard.get_mut();
+		if channel as usize >= used_array.len() || used_array[channel as usize] {
+			return None;
+		}
+		used_array[channel as usize] = true;
+
 		let c = match channel {
 			0 => Some(SELECT_CHANNEL_0),
 			2 => Some(SELECT_CHANNEL_2),
@@ -81,7 +93,7 @@ impl PITTimer {
 
 		idt::wrap_disable_interrupts(|| {
 			unsafe {
-				io::outb(PIT_COMMAND, c | ACCESS_LOBYTE_HIBYTE | MODE_4);
+				io::outb(PIT_COMMAND, c | ACCESS_LOBYTE_HIBYTE | MODE_3);
 			}
 		});
 
@@ -141,4 +153,15 @@ impl Timer for PITTimer {
 	}
 }
 
-// TODO Disable when hitting Drop
+impl Drop for PITTimer {
+	fn drop(&mut self) {
+		let mut guard = unsafe { // Safe because using Mutex
+			USED.lock()
+		};
+		let used_array = guard.get_mut();
+		if self.channel as usize >= used_array.len() {
+			return;
+		}
+		used_array[self.channel as usize] = false;
+	}
+}
