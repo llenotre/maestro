@@ -73,8 +73,8 @@ impl<O: Fn()> FrequencyDivider<O> {
 	}
 }
 
-/// A structure wrapping .
-pub struct TickableWrapper {
+/// A structure wrapping a tickable object registered into a TimerManager.
+struct TickableWrapper {
 	/// The object to be ticked.
 	tickable: Box<dyn Tickable>,
 
