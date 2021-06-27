@@ -4,10 +4,9 @@
 use crate::idt;
 use crate::io;
 use crate::time::timer::Timer;
+use crate::util::boxed::Box;
 use crate::util::lock::mutex::Mutex;
 use crate::util::math::rational::Rational;
-
-// TODO Recheck flags
 
 /// PIT channel number 0.
 const CHANNEL_0: u16 = 0x40;
@@ -27,16 +26,17 @@ const SELECT_CHANNEL_0: u8 = 0b00 << 6;
 const SELECT_CHANNEL_1: u8 = 0b01 << 6;
 /// Select PIT channel 2.
 const SELECT_CHANNEL_2: u8 = 0b10 << 6;
-/// TODO doc
+/// The read back command, used to read the current state of the PIT (doesn't work on 8253 and
+/// older).
 const READ_BACK_COMMAND: u8 = 0b11 << 6;
 
-/// TODO doc
+/// Tells the PIT to copy the current count to the latch register to be read by the CPU.
 const ACCESS_LATCH_COUNT_VALUE: u8 = 0b00 << 4;
-/// TODO doc
+/// Tells the PIT to read only the lowest 8 bits of the counter value.
 const ACCESS_LOBYTE: u8 = 0b01 << 4;
-/// TODO doc
+/// Tells the PIT to read only the highest 8 bits of the counter value.
 const ACCESS_HIBYTE: u8 = 0b10 << 4;
-/// TODO doc
+/// Tells the PIT to read the whole counter value.
 const ACCESS_LOBYTE_HIBYTE: u8 = 0b11 << 4;
 
 /// Interrupt on terminal count.
@@ -68,6 +68,9 @@ pub struct PITTimer {
 
 	/// The current frequency of the PIT.
 	current_frequency: Rational,
+
+	/// The callback to be called at each interruptions.
+	callback: Option<Box<dyn FnMut()>>,
 }
 
 impl PITTimer {
@@ -101,6 +104,8 @@ impl PITTimer {
 			channel,
 
 			current_frequency: Rational::from_integer(0),
+
+			callback: None,
 		})
 	}
 
@@ -150,6 +155,10 @@ impl Timer for PITTimer {
 
 		self.current_frequency = frequency;
 		self.set_value(c as u16);
+	}
+
+	fn set_callback(&mut self, callback: Box<dyn FnMut()>) {
+		self.callback = Some(callback);
 	}
 }
 
