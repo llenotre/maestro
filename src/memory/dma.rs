@@ -10,6 +10,7 @@ use crate::memory::vmem;
 use crate::util::boxed::Box;
 use crate::util::container::vec::Vec;
 use crate::util::lock::mutex::Mutex;
+use crate::util::lock::mutex::TMutex;
 
 /// Structure representing a DMA zone.
 pub struct DMA {

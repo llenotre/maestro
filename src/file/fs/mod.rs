@@ -11,6 +11,7 @@ use crate::util::container::string::String;
 use crate::util::container::vec::Vec;
 use crate::util::lock::mutex::Mutex;
 use crate::util::lock::mutex::MutexGuard;
+use crate::util::lock::mutex::TMutex;
 use crate::util::ptr::SharedPtr;
 use super::File;
 use super::INode;
@@ -86,7 +87,7 @@ pub fn register<T: 'static + FilesystemType>(fs_type: T) -> Result<(), Errno> {
 	};
 	let mut guard = MutexGuard::new(mutex);
 	let container = guard.get_mut();
-	container.push(SharedPtr::new(fs_type)?)
+	container.push(SharedPtr::new(Mutex::new(fs_type))?)
 }
 
 // TODO Function to unregister a filesystem type
@@ -99,8 +100,12 @@ pub fn detect(device: &mut Device) -> Result<SharedPtr<dyn FilesystemType>, Errn
 	let mut guard = MutexGuard::new(mutex);
 	let container = guard.get_mut();
 
-	for fs_type in container.iter() {
-		if fs_type.detect(device.get_handle()) {
+	for i in 0..container.len() {
+		let fs_type = &mut container[i];
+		let fs_type_guard = fs_type.lock();
+
+		if fs_type_guard.get().detect(device.get_handle()) {
+			drop(fs_type_guard);
 			return Ok(fs_type.clone()); // TODO Use a weak pointer?
 		}
 	}

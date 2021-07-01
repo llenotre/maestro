@@ -14,6 +14,7 @@ use crate::memory::dma::DMA;
 use crate::memory::dma;
 use crate::memory;
 use crate::time;
+use crate::util::lock::mutex::TMutex;
 use crate::util;
 use fadt::Fadt;
 use madt::Madt;

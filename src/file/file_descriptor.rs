@@ -8,6 +8,7 @@ use crate::limits;
 use crate::util::FailableClone;
 use crate::util::lock::mutex::Mutex;
 use crate::util::lock::mutex::MutexGuard;
+use crate::util::lock::mutex::TMutex;
 use crate::util::ptr::SharedPtr;
 
 /// The total number of file descriptors open system-wide.
@@ -75,9 +76,14 @@ impl FileDescriptor {
 		&self.file
 	}
 
+	/// Returns an immutable reference to the file associated to the descriptor.
+	pub fn get_file_mut(&mut self) -> &mut SharedPtr<File> {
+		&mut self.file
+	}
+
 	/// Returns the size of the file's content in bytes.
 	pub fn get_file_size(&self) -> u64 {
-		self.file.get_size()
+		self.file.get_mut().lock().get().get_size()
 	}
 
 	/// Returns the current offset in the file.

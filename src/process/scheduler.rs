@@ -12,7 +12,7 @@ use core::cmp::max;
 use core::ffi::c_void;
 use crate::cpu;
 use crate::errno::Errno;
-use crate::event::{Callback, CallbackHook, InterruptResult};
+use crate::event::CallbackHook;
 use crate::event;
 use crate::gdt;
 use crate::memory::malloc;
@@ -50,19 +50,7 @@ extern "C" {
 /// The structure containing the context switching data.
 struct ContextSwitchData {
 	///  The process to switch to.
-	proc: SharedPtr::<Mutex::<Process>>,
-}
-
-/// Scheduler ticking callback.
-pub struct TickCallback {
-	/// A reference to the scheduler.
-	scheduler: SharedPtr<Mutex<Scheduler>>,
-}
-
-impl Callback for TickCallback {
-	fn call(&mut self, _id: u32, _code: u32, regs: &util::Regs, ring: u32) -> InterruptResult {
-		Scheduler::tick(&mut self.scheduler, regs, ring);
-	}
+	proc: SharedPtr<Process>,
 }
 
 /// The structure representing the process scheduler.
@@ -70,16 +58,15 @@ pub struct Scheduler {
 	/// A vector containing the temporary stacks for each CPU cores.
 	tmp_stacks: Vec<malloc::Alloc<u8>>,
 
-	/// The ticking callback hook.
-	/// The ticking callback is called at a regular interval to make the scheduler work.
-	tick_callback_hook: Option<CallbackHook>,
+	/// The ticking callback hook, called at a regular interval to make the scheduler work.
+	tick_callback_hook: CallbackHook,
 	/// The total number of ticks since the instanciation of the scheduler.
 	total_ticks: u64,
 
 	/// The list of all processes.
-	processes: Vec<SharedPtr<Mutex<Process>>>,
+	processes: Vec<SharedPtr<Process>>,
 	/// The currently running process.
-	curr_proc: Option<SharedPtr<Mutex<Process>>>,
+	curr_proc: Option<SharedPtr<Process>>,
 
 	/// The sum of all priorities, used to compute the average priority.
 	priority_sum: usize,
@@ -92,40 +79,34 @@ pub struct Scheduler {
 
 impl Scheduler {
 	/// Creates a new instance of scheduler.
-	pub fn new(cores_count: usize) -> Result<SharedPtr::<Mutex::<Self>>, Errno> {
+	pub fn new(cores_count: usize) -> Result<SharedPtr<Self, InterruptMutex<Self>>, Errno> {
 		let mut tmp_stacks = Vec::new();
 		for _ in 0..cores_count {
 			tmp_stacks.push(malloc::Alloc::new_default(TMP_STACK_SIZE)?)?;
 		}
 
-		let mut s = SharedPtr::new(Mutex::new(Self {
+		let callback = | _id: u32, _code: u32, regs: &util::Regs, ring: u32 | {
+			Scheduler::tick(process::get_scheduler(), regs, ring);
+		};
+		let tick_callback_hook = event::register_callback(0x20, 0, callback)?;
+		SharedPtr::new(InterruptMutex::new(Self {
 			tmp_stacks,
 
-			tick_callback_hook: None,
+			tick_callback_hook,
 			total_ticks: 0,
 
-			processes: Vec::<SharedPtr::<Mutex::<Process>>>::new(),
+			processes: Vec::<SharedPtr<Process>>::new(),
 			curr_proc: None,
 
 			priority_sum: 0,
 			priority_max: 0,
 
 			cursor: 0,
-		}))?;
-
-		{
-			let callback = TickCallback {
-				scheduler: s.clone(),
-			};
-			let mut guard = MutexGuard::new(&mut s);
-			let scheduler = guard.get_mut();
-			scheduler.tick_callback_hook = Some(event::register_callback(32, 0, callback)?);
-		}
-		Ok(s)
+		}))
 	}
 
 	/// Returns the process with PID `pid`. If the process doesn't exist, the function returns None.
-	pub fn get_by_pid(&mut self, pid: Pid) -> Option::<SharedPtr::<Mutex::<Process>>> {
+	pub fn get_by_pid(&mut self, pid: Pid) -> Option<SharedPtr<Process>> {
 		// TODO Optimize
 		for i in 0..self.processes.len() {
 			let proc = &mut self.processes[i];
@@ -139,7 +120,7 @@ impl Scheduler {
 	}
 
 	/// Returns the current running process. If no process is running, the function returns None.
-	pub fn get_current_process(&mut self) -> Option::<SharedPtr::<Mutex::<Process>>> {
+	pub fn get_current_process(&mut self) -> Option<SharedPtr<Process>> {
 		self.curr_proc.as_ref().cloned()
 	}
 
@@ -156,8 +137,7 @@ impl Scheduler {
 	}
 
 	/// Adds a process to the scheduler.
-	pub fn add_process(&mut self, process: Process)
-		-> Result<SharedPtr::<Mutex::<Process>>, Errno> {
+	pub fn add_process(&mut self, process: Process) -> Result<SharedPtr<Process>, Errno> {
 		let priority = process.get_priority();
 		let ptr = SharedPtr::new(Mutex::new(process))?;
 		self.processes.push(ptr.clone())?;
@@ -187,7 +167,7 @@ impl Scheduler {
 	/// `i` is the index of the process in the processes list.
 	fn can_run(&self, i: usize) -> bool {
 		let mut mutex = self.processes[i].clone();
-		let guard = MutexGuard::new(&mut mutex);
+		let guard = mutex.lock();
 		let process = guard.get();
 
 		if process.get_state() == process::State::Running {
@@ -199,7 +179,7 @@ impl Scheduler {
 	}
 
 	/// Returns the next process to run.
-	fn get_next_process(&mut self) -> Option::<&mut SharedPtr::<Mutex::<Process>>> {
+	fn get_next_process(&mut self) -> Option<&mut SharedPtr<Process>> {
 		if !self.processes.is_empty() {
 			let processes_count = self.processes.len();
 			let mut i = self.cursor;
@@ -229,14 +209,14 @@ impl Scheduler {
 	/// `mutex` is the scheduler's mutex.
 	/// `regs` is the state of the registers from the paused context.
 	/// `ring` is the ring of the paused context.
-	fn tick(mutex: &mut Mutex<Self>, regs: &util::Regs, ring: u32) -> ! {
+	fn tick(mutex: &mut InterruptMutex<Self>, regs: &util::Regs, ring: u32) -> ! {
 		let mut guard = mutex.lock();
 		let scheduler = guard.get_mut();
 
 		scheduler.total_ticks += 1;
 
 		if let Some(mut curr_proc) = scheduler.get_current_process() {
-			let mut guard = MutexGuard::new(&mut curr_proc);
+			let mut guard = curr_proc.lock();
 			let curr_proc = guard.get_mut();
 
 			curr_proc.regs = *regs;
@@ -251,7 +231,7 @@ impl Scheduler {
 					let data = unsafe {
 						&mut *(data as *mut ContextSwitchData)
 					};
-					let mut guard = MutexGuard::new(&mut data.proc);
+					let mut guard = data.proc.lock();
 					let proc = guard.get_mut();
 					proc.quantum_count += 1;
 
@@ -288,7 +268,13 @@ impl Scheduler {
 				proc: scheduler.curr_proc.as_mut().unwrap().clone(),
 			};
 
+			// Required because calling the context switch function won't drop the
+			// mutex guard, locking the scheduler forever
 			drop(guard);
+			unsafe {
+				event::unlock_callbacks(0x20);
+			}
+
 			unsafe {
 				stack::switch(tmp_stack, f, ctx_switch_data).unwrap();
 			}

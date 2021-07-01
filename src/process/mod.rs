@@ -7,7 +7,7 @@ use core::ptr::NonNull;
 use crate::cpu;
 use crate::errno::Errno;
 use crate::errno;
-use crate::event::{Callback, InterruptResult, InterruptResultAction};
+use crate::event::{InterruptResult, InterruptResultAction};
 use crate::event;
 use crate::file::File;
 use crate::file::Gid;
@@ -142,25 +142,33 @@ pub struct Process {
 /// The PID manager.
 static mut PID_MANAGER: MaybeUninit<Mutex<PIDManager>> = MaybeUninit::uninit();
 /// The processes scheduler.
-static mut SCHEDULER: MaybeUninit<SharedPtr<Mutex<Scheduler>>> = MaybeUninit::uninit();
+static mut SCHEDULER: MaybeUninit<SharedPtr<Scheduler, InterruptMutex<Scheduler>>>
+	= MaybeUninit::uninit();
 
-/// Scheduler ticking callback.
-pub struct ProcessFaultCallback {}
+/// Initializes processes system. This function must be called only once, at kernel initialization.
+pub fn init() -> Result<(), Errno> {
+	tss::init();
+	tss::flush();
 
-impl Callback for ProcessFaultCallback {
-	fn call(&mut self, id: u32, code: u32, regs: &Regs, ring: u32) -> InterruptResult {
+	unsafe {
+		PID_MANAGER.write(Mutex::new(PIDManager::new()?));
+		SCHEDULER.write(Scheduler::new(cpu::get_count())?);
+	}
+
+	// TODO Register for all errors that can be caused by a process
+	// TODO Use only one instance?
+	let callback = | id: u32, code: u32, regs: &Regs, ring: u32 | {
 		if ring < 3 {
 			return InterruptResult::new(true, InterruptResultAction::Panic);
 		}
 
-		let mutex = unsafe {
+		let mut guard = unsafe {
 			SCHEDULER.assume_init_mut()
-		};
-		let mut guard = MutexGuard::new(mutex);
+		}.lock();
 		let scheduler = guard.get_mut();
 
 		if let Some(mut curr_proc) = scheduler.get_current_process() {
-			let mut curr_proc_guard = MutexGuard::new(&mut curr_proc);
+			let mut curr_proc_guard = curr_proc.lock();
 			let curr_proc = curr_proc_guard.get_mut();
 
 			match id {
@@ -200,44 +208,35 @@ impl Callback for ProcessFaultCallback {
 		} else {
 			InterruptResult::new(true, InterruptResultAction::Panic)
 		}
-	}
-}
-
-/// Initializes processes system. This function must be called only once, at kernel initialization.
-pub fn init() -> Result<(), Errno> {
-	tss::init();
-	tss::flush();
-
-	unsafe {
-		PID_MANAGER.write(Mutex::new(PIDManager::new()?));
-		SCHEDULER.write(Scheduler::new(cpu::get_count())?);
-	}
-
-	// TODO Register for all errors that can be caused by a process
-	// TODO Use only one instance?
-	event::register_callback(0x0d, u32::MAX, ProcessFaultCallback {})?;
-	event::register_callback(0x0e, u32::MAX, ProcessFaultCallback {})?;
+	};
+	let _ = event::register_callback(0x0d, u32::MAX, callback)?;
+	let _ = event::register_callback(0x0e, u32::MAX, callback)?;
 
 	Ok(())
+}
+
+/// Returns a mutable reference to the scheduler's Mutex.
+pub fn get_scheduler() -> &'static mut InterruptMutex<Scheduler> {
+	unsafe { // Safe because using Mutex
+		SCHEDULER.assume_init_mut()
+	}
 }
 
 impl Process {
 	/// Returns the process with PID `pid`. If the process doesn't exist, the function returns
 	/// None.
-	pub fn get_by_pid(pid: Pid) -> Option<SharedPtr<Mutex<Self>>> {
-		let mutex = unsafe {
+	pub fn get_by_pid(pid: Pid) -> Option<SharedPtr<Self>> {
+		let mut guard = unsafe {
 			SCHEDULER.assume_init_mut()
-		};
-		let mut guard = MutexGuard::new(mutex);
+		}.lock();
 		guard.get_mut().get_by_pid(pid)
 	}
 
 	/// Returns the current running process. If no process is running, the function returns None.
-	pub fn get_current() -> Option<SharedPtr<Mutex<Self>>> {
-		let mutex = unsafe {
+	pub fn get_current() -> Option<SharedPtr<Self>> {
+		let mut guard = unsafe {
 			SCHEDULER.assume_init_mut()
-		};
-		let mut guard = MutexGuard::new(mutex);
+		}.lock();
 		guard.get_mut().get_current_process()
 	}
 
@@ -249,7 +248,7 @@ impl Process {
 	/// `entry_point` is the pointer to the first instruction of the process.
 	/// `cwd` the path to the process's working directory.
 	pub fn new(parent: Option<NonNull<Process>>, uid: Uid, gid: Gid, entry_point: *const c_void,
-		cwd: Path) -> Result<SharedPtr<Mutex<Self>>, Errno> {
+		cwd: Path) -> Result<SharedPtr<Self>, Errno> {
 		let pid = {
 			let mutex = unsafe {
 				PID_MANAGER.assume_init_mut()
@@ -319,10 +318,9 @@ impl Process {
 			process.duplicate_fd(STDIN_FILENO, Some(STDERR_FILENO))?;
 		}
 
-		let mutex = unsafe {
+		let mut guard = unsafe {
 			SCHEDULER.assume_init_mut()
-		};
-		let mut guard = MutexGuard::new(mutex);
+		}.lock();
 		guard.get_mut().add_process(process)
 	}
 
@@ -345,7 +343,7 @@ impl Process {
 	pub fn set_pgid(&mut self, pgid: Pid) -> Result<(), Errno> {
 		if self.is_in_group() {
 			let mut mutex = Process::get_by_pid(self.pgid).unwrap();
-			let mut guard = MutexGuard::new(&mut mutex);
+			let mut guard = mutex.lock();
 			let old_group_process = guard.get_mut();
 			let i = old_group_process.process_group.binary_search(&self.pid).unwrap();
 			old_group_process.process_group.remove(i);
@@ -361,7 +359,7 @@ impl Process {
 
 		if pgid != self.pid {
 			if let Some(mut mutex) = Process::get_by_pid(pgid) {
-				let mut guard = MutexGuard::new(&mut mutex);
+				let mut guard = mutex.lock();
 				let new_group_process = guard.get_mut();
 				let i = new_group_process.process_group.binary_search(&self.pid).unwrap_err();
 				new_group_process.process_group.insert(i, self.pid)
@@ -609,7 +607,7 @@ impl Process {
 	/// Forks the current process. Duplicating everything for it to be identical, except the PID,
 	/// the parent process and children processes. On fail, the function returns an Err with the
 	/// appropriate Errno.
-	pub fn fork(&mut self) -> Result<SharedPtr<Mutex<Self>>, Errno> {
+	pub fn fork(&mut self) -> Result<SharedPtr<Self>, Errno> {
 		// TODO Free if the function fails
 		let pid = {
 			let mutex = unsafe {
@@ -656,10 +654,9 @@ impl Process {
 		};
 		self.add_child(pid)?;
 
-		let mutex = unsafe {
+		let mut guard = unsafe {
 			SCHEDULER.assume_init_mut()
-		};
-		let mut guard = MutexGuard::new(mutex);
+		}.lock();
 		guard.get_mut().add_process(process)
 	}
 

@@ -1,6 +1,7 @@
 //! This file handles interruptions, it provides an interface allowing to register callbacks for
 //! each interrupts. Each callback has a priority number and is called in descreasing order.
 
+use core::ffi::c_void;
 use core::mem::MaybeUninit;
 use crate::cpu::pic;
 use crate::errno::Errno;
@@ -86,38 +87,42 @@ impl InterruptResult {
 	}
 }
 
-/// Trait representing a callback that aims to be called whenever an associated interruption is
-/// triggered.
-pub trait Callback {
-	/// Calls the callback.
-	/// `id` is the id of the interrupt.
-	/// `code` is an optional code associated with the interrupt. If no code is given, the value is
-	/// `0`.
-	/// `regs` the values of the registers when the interruption was triggered.
-	/// `ring` tells the ring at which the code was running.
-	/// If the function returns `false`, the kernel shall panic.
-	fn call(&mut self, id: u32, code: u32, regs: &util::Regs, ring: u32) -> InterruptResult;
-}
-
 /// Structure wrapping a callback to insert it into a linked list.
 struct CallbackWrapper {
 	/// The priority associated with the callback. Higher value means higher priority
 	priority: u32,
+
 	/// The callback
-	callback: Box<dyn Callback>,
+	/// First argument: `id` is the id of the interrupt.
+	/// Second argument: `code` is an optional code associated with the interrupt. If no code
+	/// is given, the value is `0`.
+	/// Third argument: `regs` the values of the registers when the interruption was triggered.
+	/// Fourth argument: `ring` tells the ring at which the code was running.
+	/// The return value tells which action to perform next.
+	callback: Box<dyn Fn(u32, u32, &util::Regs, u32) -> InterruptResult>,
 }
 
 /// Structure used to detect whenever the object owning the callback is destroyed, allowing to
 /// unregister it automatically.
+#[must_use]
 pub struct CallbackHook {
-	// TODO Store informations on the callback
+	/// The id of the interrupt the callback is bound to.
+	id: usize,
+	/// The priority of the callback.
+	priority: u32,
+
+	/// The pointer of the callback.
+	ptr: *const c_void,
 }
 
 impl CallbackHook {
 	/// Creates a new instance.
-	fn new() -> Self {
+	fn new(id: usize, priority: u32, ptr: *const c_void) -> Self {
 		Self {
-			// TODO
+			id,
+			priority,
+
+			ptr,
 		}
 	}
 }
@@ -150,8 +155,8 @@ pub fn init() {
 /// `callback` is the callback to register.
 ///
 /// If the `id` is invalid or if an allocation fails, the function shall return an error.
-pub fn register_callback<T: 'static + Callback>(id: usize, priority: u32, callback: T)
-	-> Result<CallbackHook, Errno> {
+pub fn register_callback<T>(id: usize, priority: u32, callback: T) -> Result<CallbackHook, Errno>
+	where T: 'static + Fn(u32, u32, &util::Regs, u32) -> InterruptResult {
 	debug_assert!(id < idt::ENTRIES_COUNT);
 
 	idt::wrap_disable_interrupts(|| {
@@ -177,8 +182,18 @@ pub fn register_callback<T: 'static + Callback>(id: usize, priority: u32, callba
 			callback: Box::new(callback)?,
 		})?;
 
-		Ok(CallbackHook::new()) // TODO
+		Ok(CallbackHook::new(id, priority, core::ptr::null::<c_void>())) // TODO
 	})
+}
+
+/// Unlocks the callback vector with id `id`. This function is to be used in case of an event
+/// callback that never returns.
+/// It must be called from the same CPU core as the one that locked the mutex since InterruptMutex
+/// changes the interrupt flag.
+/// This function is marked as unsafe since it may lead to concurrency issues if not used properly.
+#[no_mangle]
+pub unsafe extern "C" fn unlock_callbacks(id: usize) {
+	CALLBACKS.assume_init_mut()[id as usize].unlock();
 }
 
 /// This function is called whenever an interruption is triggered.
@@ -190,9 +205,10 @@ pub fn register_callback<T: 'static + Callback>(id: usize, priority: u32, callba
 #[no_mangle]
 pub extern "C" fn event_handler(id: u32, code: u32, ring: u32, regs: &util::Regs) {
 	let action = {
-		let callbacks = unsafe {
-			CALLBACKS.assume_init_mut()[id as usize].get_mut_payload()
-		};
+		let guard = unsafe {
+			&mut CALLBACKS.assume_init_mut()[id as usize]
+		}.lock();
+		let callbacks = guard.get();
 
 		let mut last_action = {
 			if (id as usize) < ERROR_MESSAGES.len() {
@@ -203,7 +219,7 @@ pub extern "C" fn event_handler(id: u32, code: u32, ring: u32, regs: &util::Regs
 		};
 
 		for i in 0..callbacks.len() {
-			let result = (callbacks[i].callback).call(id, code, regs, ring);
+			let result = (callbacks[i].callback)(id, code, regs, ring);
 			last_action = result.action;
 			if result.skip_next {
 				break;

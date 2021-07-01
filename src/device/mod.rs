@@ -22,6 +22,7 @@ use crate::util::boxed::Box;
 use crate::util::container::vec::Vec;
 use crate::util::lock::mutex::Mutex;
 use crate::util::lock::mutex::MutexGuard;
+use crate::util::lock::mutex::TMutex;
 use crate::util::ptr::SharedPtr;
 use keyboard::KeyboardManager;
 use storage::StorageManager;
@@ -160,7 +161,8 @@ impl Device {
 		let files_cache = guard.get_mut();
 
 		if let Ok(mut file) = files_cache.get_file_from_path(&self.path) {
-			file.unlink();
+			let mut guard = file.lock();
+			guard.get_mut().unlink();
 		}
 	}
 }
@@ -195,7 +197,10 @@ pub fn register_device(device: Device) -> Result<(), Errno> {
 
 	let device_number = device.get_device_number();
 	let index = container.binary_search_by(| d | {
-		let dn = d.get_device_number();
+		let dn = unsafe {
+			d.get_mut().get_mut_payload()
+		}.get_device_number();
+
 		device_number.cmp(&dn)
 	});
 	let index = match index {
@@ -203,7 +208,7 @@ pub fn register_device(device: Device) -> Result<(), Errno> {
 		Err(i) => i,
 	};
 
-	container.insert(index, SharedPtr::new(device)?)
+	container.insert(index, SharedPtr::new(Mutex::new(device))?)
 }
 
 // TODO Function to remove a device
@@ -227,7 +232,10 @@ pub fn get_device(type_: DeviceType, major: u32, minor: u32) -> Option<SharedPtr
 
 	let device_number = id::makedev(major, minor);
 	let index = container.binary_search_by(| d | {
-		let dn = d.get_device_number();
+		let dn = unsafe {
+			d.get_mut().get_mut_payload()
+		}.get_device_number();
+
 		device_number.cmp(&dn)
 	});
 
