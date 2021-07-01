@@ -27,6 +27,8 @@ const TRAMPOLINE_SIZE: usize = memory::PAGE_SIZE;
 /// The size of a core's startup stack.
 const CORE_STACK_SIZE: usize = memory::PAGE_SIZE * 8;
 
+/// The offset of the APIC End Of Interrupt register.
+const APIC_OFFSET_EOI: usize = 0xb0;
 /// The offset of the APIC Spurious Interrupt Vector register.
 const APIC_OFFSET_SIV: usize = 0xf0;
 /// The offset of the APIC error status register.
@@ -83,7 +85,6 @@ pub mod apic {
 	/// Sets the APIC physical address.
 	/// This function is **not** thread-safe.
 	pub unsafe fn set_addr(addr: *mut c_void) {
-		// TODO Remap vmem? (since the APIC seems to be accessed through DMA)
 		APIC_ADDR = Some(addr);
 	}
 
@@ -132,7 +133,10 @@ pub mod apic {
 
 	/// Sends an End-Of-Interrupt message to the APIC for the given interrupt `irq`.
 	pub fn end_of_interrupt(_irq: u8) {
-		// TODO
+		unsafe { // Safe because the register offset is valid
+			let eoi = apic::get_register(APIC_OFFSET_EOI);
+			ptr::write_volatile(eoi, 0);
+		}
 	}
 }
 
