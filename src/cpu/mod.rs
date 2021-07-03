@@ -16,9 +16,9 @@ use crate::time;
 use crate::util::container::vec::Vec;
 use crate::util::lock::mutex::Mutex;
 use crate::util::lock::mutex::TMutex;
-use crate::util;
 
 mod startup;
+pub mod apic;
 pub mod pic;
 
 /// The physical address to the destination of the trampoline.
@@ -27,17 +27,6 @@ const TRAMPOLINE_PTR: *mut c_void = 0x8000 as *mut c_void;
 const TRAMPOLINE_SIZE: usize = memory::PAGE_SIZE;
 /// The size of a core's startup stack.
 const CORE_STACK_SIZE: usize = memory::PAGE_SIZE * 8;
-
-/// The offset of the APIC End Of Interrupt register.
-const APIC_OFFSET_EOI: usize = 0xb0;
-/// The offset of the APIC Spurious Interrupt Vector register.
-const APIC_OFFSET_SIV: usize = 0xf0;
-/// The offset of the APIC error status register.
-const APIC_OFFSET_ERROR_STATUS: usize = 0x280;
-/// The offset of the APIC Interrupt Command Register register 0.
-const APIC_OFFSET_ICR0: usize = 0x300;
-/// The offset of the APIC Interrupt Command Register register 1.
-const APIC_OFFSET_ICR1: usize = 0x310;
 
 extern "C" {
 	fn get_current_apic() -> u32;
@@ -72,71 +61,6 @@ pub mod msr {
 	pub fn write(i: u32, lo: u32, hi: u32) {
 		unsafe {
 			msr_write(i, lo, hi);
-		}
-	}
-}
-
-/// Module handling APIC-related features.
-pub mod apic {
-	use super::*;
-
-	/// The APIC's physical address.
-	static mut APIC_ADDR: Option<*mut c_void> = None;
-
-	/// Sets the APIC physical address.
-	/// This function is **not** thread-safe.
-	pub unsafe fn set_addr(addr: *mut c_void) {
-		APIC_ADDR = Some(addr);
-	}
-
-	/// Enables the APIC.
-	/// This function requires the APIC address to be set first. If not set, the behaviour is
-	/// undefined.
-	/// This function is **not** thread-safe.
-	pub fn enable() {
-        let mut lo = 0;
-        let mut hi = 0;
-		// TODO Place constant values into constants
-		msr::read(0x1b, &mut lo, &mut hi);
-		msr::write(0x1b, (lo & 0xffff0000) | 0x800, 0);
-
-		unsafe {
-			let siv = get_register(APIC_OFFSET_SIV);
-			ptr::write_volatile(siv, ptr::read_volatile(siv) | 0x100);
-		}
-	}
-
-	/// Tells whether the APIC is enabled.
-	/// This function is **not** thread-safe.
-	pub unsafe fn is_enabled() -> bool {
-		APIC_ADDR.is_some()
-	}
-
-	/// Returns a mutable reference to the APIC register at offset `offset`.
-	/// This function requires the APIC address to be set first. If not set, the behaviour is
-	/// undefined.
-	/// If the offset is invalid, the behaviour is undefined.
-	pub unsafe fn get_register(offset: usize) -> *mut u32 {
-		let ptr = (memory::kern_to_virt(APIC_ADDR.unwrap()) as usize + offset) as *mut u32;
-		debug_assert!(util::is_aligned(ptr as _, 16));
-		ptr
-	}
-
-	/// Waits until the interrupt has been delivered.
-	/// This function requires the APIC address to be set first. If not set, the behaviour is
-	/// undefined.
-	pub fn wait_delivery() {
-		unsafe { // Safe because the register offset is valid
-			let icr0 = apic::get_register(APIC_OFFSET_ICR0);
-			while ptr::read_volatile(icr0) & (1 << 12) != 0 {}
-		}
-	}
-
-	/// Sends an End-Of-Interrupt message to the APIC for the given interrupt `irq`.
-	pub fn end_of_interrupt(_irq: u8) {
-		unsafe { // Safe because the register offset is valid
-			let eoi = apic::get_register(APIC_OFFSET_EOI);
-			ptr::write_volatile(eoi, 0);
 		}
 	}
 }
@@ -199,9 +123,9 @@ impl CPU {
 	/// Enables the CPU. If already enabled, the behaviour is undefined.
 	pub fn enable(&self) {
 		unsafe {
-			let err = apic::get_register(APIC_OFFSET_ERROR_STATUS);
-			let icr0 = apic::get_register(APIC_OFFSET_ICR0);
-			let icr1 = apic::get_register(APIC_OFFSET_ICR1);
+			let err = apic::get_register(apic::REG_OFFSET_ERROR_STATUS);
+			let icr0 = apic::get_register(apic::REG_OFFSET_ICR0);
+			let icr1 = apic::get_register(apic::REG_OFFSET_ICR1);
 
 			ptr::write_volatile(err, 0);
 
