@@ -101,11 +101,11 @@ pub fn init() {
 	}
 	let data = data.unwrap();
 
-    if let Some(madt) = data.get_table::<Madt>() {
-        let apic_addr = madt.local_apic_addr as *mut c_void;
+	if let Some(madt) = data.get_table::<Madt>() {
+		let apic_addr = madt.local_apic_addr as *mut c_void;
 
 		// Registering CPU cores
-        madt.foreach_entry(| e: &madt::EntryHeader | match e.get_type() {
+		madt.foreach_entry(| e: &madt::EntryHeader | match e.get_type() {
 			madt::ENTRY_PROCESSOR_LOCAL_APIC => {
 				let e = unsafe {
 					&*(e as *const _ as *const madt::EntryProcessorLocalAPIC)
@@ -124,41 +124,41 @@ pub fn init() {
 			},
 
 			_ => {},
-        });
+		});
 
 		// TODO doc
-        unsafe {
-            cpu::apic::set_addr(apic_addr as _);
-        }
-        dma::register(DMA::new(apic_addr, 1, apic_addr)).unwrap(); // TODO Print proper error msg
+		unsafe {
+			cpu::apic::set_addr(apic_addr as _);
+		}
+		dma::register(DMA::new(apic_addr, 1, apic_addr)).unwrap(); // TODO Print proper error msg
 
 		// TODO doc
-        madt.foreach_entry(| e: &madt::EntryHeader | {
-            match e.get_type() {
-                madt::ENTRY_IO_APIC => {
-                    let e = unsafe {
-                        &*(e as *const _ as *const madt::EntryIOAPIC)
-                    };
+		madt.foreach_entry(| e: &madt::EntryHeader | {
+			match e.get_type() {
+				madt::ENTRY_IO_APIC => {
+					let e = unsafe {
+						&*(e as *const _ as *const madt::EntryIOAPIC)
+					};
 
-                    let list_mutex = cpu::list();
-                    let mut list_guard = list_mutex.lock();
-                    let list = list_guard.get_mut();
+					let list_mutex = cpu::list();
+					let mut list_guard = list_mutex.lock();
+					let list = list_guard.get_mut();
 
-                    for i in 0..list.len() {
-                        let mut guard = list[i].lock();
-                        let cpu = guard.get_mut();
+					for i in 0..list.len() {
+						let mut guard = list[i].lock();
+						let cpu = guard.get_mut();
 
-                        if cpu.get_apic_id() == e.io_apic_id as _ {
-                            cpu.set_io_apic_addr(Some(e.io_apic_addr as _));
-                            break;
-                        }
-                    }
-                },
+						if cpu.get_apic_id() == e.io_apic_id as _ {
+							cpu.set_io_apic_addr(Some(e.io_apic_addr as _));
+							break;
+						}
+					}
+				},
 
-                _ => {},
-            }
-        });
-    }
+				_ => {},
+			}
+		});
+	}
 
 	// Setting the century register value
 	unsafe { // Safe because the value is only set once

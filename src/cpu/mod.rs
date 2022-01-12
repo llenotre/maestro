@@ -55,11 +55,11 @@ extern "C" {
 
 /// Model Specific Register (MSR) features.
 pub mod msr {
-    extern "C" {
-        fn msr_exist() -> u32;
-        fn msr_read(i: u32, lo: *mut u32, hi: *mut u32);
-        fn msr_write(i: u32, lo: u32, hi: u32);
-    }
+	extern "C" {
+		fn msr_exist() -> u32;
+		fn msr_read(i: u32, lo: *mut u32, hi: *mut u32);
+		fn msr_write(i: u32, lo: u32, hi: u32);
+	}
 
 	/// Tells whether MSR exist.
 	pub fn exist() -> bool {

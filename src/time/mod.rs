@@ -1,7 +1,8 @@
 //! This module handles time-releated features.
 //!
 //! A clock source is an object that allow to get the current timestamp.
-//! A timer allows to interrupt the system at a specified frequency. Delay functions work using those.
+//! A timer allows to interrupt the system at a specified frequency. Delay functions work using
+//! those.
 
 pub mod timer;
 
