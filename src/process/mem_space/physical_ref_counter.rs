@@ -3,7 +3,6 @@
 //! For each page that is referenced more than once, the counter stores the number of references to
 //! that page. A binary tree is used to find the page from its pointer.
 
-use core::cmp::Ordering;
 use core::ffi::c_void;
 use crate::errno::Errno;
 use crate::memory;
@@ -18,49 +17,17 @@ pub struct PageRefCounter {
 	references: usize,
 }
 
-impl Ord for PageRefCounter {
-	fn cmp(&self, other: &Self) -> Ordering {
-		self.page_addr.cmp(&other.page_addr)
-	}
-}
-
-impl Eq for PageRefCounter {}
-
-impl PartialEq for PageRefCounter {
-	fn eq(&self, other: &Self) -> bool {
-		self.page_addr == other.page_addr
-	}
-}
-
-impl PartialOrd for PageRefCounter {
-	fn partial_cmp(&self, other: &Self) -> Option::<Ordering> {
-		Some(self.page_addr.cmp(&other.page_addr))
-	}
-}
-
-impl PartialEq::<*const c_void> for PageRefCounter {
-	fn eq(&self, other: &*const c_void) -> bool {
-		self.page_addr == *other
-	}
-}
-
-impl PartialOrd::<*const c_void> for PageRefCounter {
-	fn partial_cmp(&self, other: &*const c_void) -> Option::<Ordering> {
-		Some(self.page_addr.cmp(other))
-	}
-}
-
 /// Structure representing the reference counter for all physical pages.
 pub struct PhysRefCounter {
 	/// The binary tree storing the number of references for each pages.
-	tree: BinaryTree::<PageRefCounter>,
+	tree: BinaryTree<*const c_void, PageRefCounter>,
 }
 
 impl PhysRefCounter {
 	/// Creates a new instance.
 	pub const fn new() -> Self {
 		Self {
-			tree: BinaryTree::<PageRefCounter>::new(),
+			tree: BinaryTree::<*const c_void, PageRefCounter>::new(),
 		}
 	}
 
@@ -89,13 +56,14 @@ impl PhysRefCounter {
 		let ptr = util::down_align(ptr, memory::PAGE_SIZE);
 		if let Some(counter) = self.tree.get_mut(ptr) {
 			counter.references += 1;
-			Ok(())
 		} else {
-			self.tree.insert(PageRefCounter {
+			self.tree.insert(ptr, PageRefCounter {
 				page_addr: ptr,
 				references: 1,
-			})
+			})?;
 		}
+
+		Ok(())
 	}
 
 	/// Decrements the references count for the given page. If the page's counter reaches 1, the

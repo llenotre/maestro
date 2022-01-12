@@ -1,51 +1,42 @@
 /*
- * This file implements the system call stub, which is the code that is executed whenever a system
- * call is used.
+ * This file implements the function that handles the system calls.
  */
+
+.include "src/process/regs/regs.s"
 
 .global syscall
 
 .section .text
 
 /*
- * The system call stub.
+ * The function handling system calls.
  */
 syscall:
 	cli
 	push %ebp
 	mov %esp, %ebp
 
-	push %edi
-	push %esi
-	push %edx
-	push %ecx
-	push %ebx
-	push %eax
+	# Storing registers state
+GET_REGS
 
-	push 12(%ebp)
-	push 4(%ebp)
-	push 16(%ebp)
-	push (%ebp)
-
-	mov $GDT_KERNEL_DATA_OFFSET, %ax
+	# Setting segments
+	mov $GDT_KERNEL_DS, %ax
 	mov %ax, %ds
 	mov %ax, %es
-	mov %ax, %fs
-	mov %ax, %gs
 
+	# Calling the system call handler
 	push %esp
+	sti
 	call syscall_handler
-	add $44, %esp
+	cli
+	add $4, %esp
 
+	# Restoring segments
 	xor %ebx, %ebx
-	mov $GDT_USER_DATA_OFFSET, %bx
+	mov $GDT_USER_DS, %bx
 	or $3, %bx
 	mov %bx, %ds
 	mov %bx, %es
-	mov %bx, %fs
-	mov %bx, %gs
 
-	mov %ebp, %esp
-	pop %ebp
-	sti
-	iret
+	# Restoring registers state
+END_INTERRUPT

@@ -32,14 +32,12 @@ pub const TAG_TYPE_EFI32_IH: u32 = 19;
 pub const TAG_TYPE_EFI64_IH: u32 = 20;
 pub const TAG_TYPE_LOAD_BASE_ADDR: u32 = 21;
 
-// TODO Check type
 pub const MEMORY_AVAILABLE: u32 = 1;
 pub const MEMORY_RESERVED: u32 = 2;
 pub const MEMORY_ACPI_RECLAIMABLE: u32 = 3;
 pub const MEMORY_NVS: u32 = 4;
 pub const MEMORY_BADRAM: u32 = 5;
 
-// TODO Check type
 pub const FRAMEBUFFER_TYPE_INDEXED: u32 = 0;
 pub const FRAMEBUFFER_TYPE_RGB: u32 = 1;
 pub const FRAMEBUFFER_TYPE_EGA_TEXT: u32 = 2;
@@ -372,9 +370,9 @@ impl Tag {
 /// Structure representing the informations given to the kernel at boot time.
 pub struct BootInfo {
 	/// The command line used to boot the kernel.
-	pub cmdline: &'static str,
+	pub cmdline: &'static [u8],
 	/// The bootloader's name.
-	pub loader_name: &'static str,
+	pub loader_name: &'static [u8],
 
 	/// The lower memory size.
 	pub mem_lower: u32,
@@ -399,8 +397,8 @@ pub struct BootInfo {
 
 /// The field storing the informations given to the kernel at boot time.
 static mut BOOT_INFO: BootInfo = BootInfo {
-	cmdline: "",
-	loader_name: "",
+	cmdline: b"",
+	loader_name: b"",
 	mem_lower: 0,
 	mem_upper: 0,
 	memory_maps_size: 0,
@@ -444,8 +442,8 @@ fn handle_tag(boot_info: &mut BootInfo, tag: *const Tag) {
 			let t = tag as *const TagString;
 
 			unsafe {
-				let ptr = memory::kern_to_virt(&(*t).string as *const _ as *const _);
-				boot_info.cmdline = util::ptr_to_str(ptr);
+				let ptr = memory::kern_to_virt(&(*t).string as *const _ as *const _) as *const u8;
+				boot_info.cmdline = util::str_from_ptr(ptr);
 			}
 		},
 
@@ -453,13 +451,9 @@ fn handle_tag(boot_info: &mut BootInfo, tag: *const Tag) {
 			let t = tag as *const TagString;
 
 			unsafe {
-				let ptr = memory::kern_to_virt(&(*t).string as *const _ as *const _);
-				boot_info.loader_name = util::ptr_to_str(ptr);
+				let ptr = memory::kern_to_virt(&(*t).string as *const _ as *const _) as *const u8;
+				boot_info.loader_name = util::str_from_ptr(ptr);
 			}
-		},
-
-		TAG_TYPE_MODULE => {
-			// TODO
 		},
 
 		TAG_TYPE_BASIC_MEMINFO => {
@@ -469,10 +463,6 @@ fn handle_tag(boot_info: &mut BootInfo, tag: *const Tag) {
 
 			boot_info.mem_lower = t.mem_lower;
 			boot_info.mem_upper = t.mem_upper;
-		},
-
-		TAG_TYPE_BOOTDEV => {
-			// TODO
 		},
 
 		TAG_TYPE_MMAP => {
@@ -495,8 +485,6 @@ fn handle_tag(boot_info: &mut BootInfo, tag: *const Tag) {
 				boot_info.elf_sections = (*t).sections.as_ptr() as _;
 			}
 		},
-
-		// TODO
 
 		_ => {}
 	}

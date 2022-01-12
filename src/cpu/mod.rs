@@ -4,6 +4,11 @@
 //! is the code to be executed by the new core in the beginning. Since the core is booting in real
 //! mode, the trampoline code is required to be assembly code.
 
+mod startup;
+pub mod apic;
+pub mod pic;
+pub mod sse;
+
 use core::ffi::c_void;
 use core::mem::size_of;
 use core::mem::transmute;
@@ -14,12 +19,7 @@ use crate::memory::vmem;
 use crate::memory;
 use crate::time;
 use crate::util::container::vec::Vec;
-use crate::util::lock::mutex::Mutex;
-use crate::util::lock::mutex::TMutex;
-
-mod startup;
-pub mod apic;
-pub mod pic;
+use crate::util::lock::Mutex;
 
 /// The physical address to the destination of the trampoline.
 const TRAMPOLINE_PTR: *mut c_void = 0x8000 as *mut c_void;
@@ -33,6 +33,24 @@ extern "C" {
 
 	fn cpu_trampoline();
 	static mut trampoline_stacks: u32;
+
+	/// Tells whether the CPU has SSE.
+	fn cpuid_has_sse() -> bool;
+
+	/// Returns the content of the %cr0 register.
+	pub fn cr0_get() -> u32;
+	/// Sets the given flags in the %cr0 register.
+	pub fn cr0_set(flags: u32);
+	/// Clears the given flags in the %cr0 register.
+	pub fn cr0_clear(flags: u32);
+	/// Returns the content of the %cr2 register.
+	pub fn cr2_get() -> *const c_void;
+	/// Returns the content of the %cr3 register.
+	pub fn cr3_get() -> *mut c_void;
+	/// Returns the content of the %cr4 register.
+	pub fn cr4_get() -> u32;
+	/// Sets the content of the %cr4 register.
+	pub fn cr4_set(flags: u32);
 }
 
 /// Model Specific Register (MSR) features.
@@ -268,12 +286,12 @@ pub fn init_multicore() {
 
 /// The function to be called at the end of an interrupt.
 #[no_mangle]
-extern "C" fn end_of_interrupt(irq: u8) {
-	let enabled = unsafe {
+pub extern "C" fn end_of_interrupt(irq: u8) {
+	let apic_enabled = unsafe {
 		apic::is_enabled()
 	};
 
-	if enabled {
+	if apic_enabled {
 		apic::end_of_interrupt(irq);
 	} else {
 		pic::end_of_interrupt(irq);

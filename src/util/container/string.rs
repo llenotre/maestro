@@ -4,11 +4,11 @@ use core::fmt::Debug;
 use core::fmt;
 use core::hash::Hash;
 use core::hash::Hasher;
+use core::ops::Add;
 use core::str;
 use crate::errno::Errno;
 use crate::util::FailableClone;
 use crate::util::container::vec::Vec;
-use crate::util::math;
 
 /// Returns the number of characters required to represent the given number `n` as a String.
 fn get_number_len(mut n: i64, base: u8) -> usize {
@@ -33,7 +33,7 @@ fn get_number_len(mut n: i64, base: u8) -> usize {
 /// The String structure, which wraps the `str` primitive type.
 pub struct String {
 	/// A Vec containing the string's data.
-	data: Vec::<u8>,
+	data: Vec<u8>,
 }
 
 impl String {
@@ -44,11 +44,10 @@ impl String {
 		}
 	}
 
-	/// Creates a new instance. If the string cannot be allocated, the function return Err.
-	pub fn from(s: &str) -> Result<Self, Errno> {
-		let bytes = s.as_bytes();
-		let mut v = Vec::with_capacity(bytes.len())?;
-		for b in bytes {
+	/// Creates a new instance from the given byte slice.
+	pub fn from(s: &[u8]) -> Result<Self, Errno> {
+		let mut v = Vec::with_capacity(s.len())?;
+		for b in s {
 			v.push(*b)?;
 		}
 
@@ -65,46 +64,47 @@ impl String {
 		let len = get_number_len(n, 10);
 		debug_assert!(len > 0);
 		let mut v = Vec::with_capacity(len)?;
+		v.resize(len)?;
 
 		let mut l = len;
 		if n < 0 {
-			v.push(b'-')?;
+			v[0] = b'-';
 			l -= 1;
 		}
-		for i in (0..l).rev() {
-			let b = {
-				if i == 0 {
-					(n % 10).abs() as u8
-				} else {
-					let shift = math::pow(10, i) as i64;
-					(n / shift % 10).abs() as u8
-				}
-			};
 
-			v.push(b'0' + b)?;
+		let mut shift = 1 as i64;
+		for i in 0..l {
+			let b = (n / shift % 10).abs() as u8;
+
+			v[len - i - 1] = b'0' + b;
+			shift *= 10;
 		}
-		debug_assert_eq!(v.len(), len);
 
 		Ok(Self {
 			data: v,
 		})
 	}
 
-	/// Returns a reference to the wrapped string.
-	pub fn as_str(&self) -> &str {
-		unsafe {
-			str::from_utf8_unchecked(self.data.as_slice())
-		}
-	}
-
 	/// Returns a slice containing the bytes representation of the string.
 	pub fn as_bytes(&self) -> &[u8] {
-		self.as_str().as_bytes()
+		self.data.as_slice()
+	}
+
+	/// Returns a reference to the wrapped string.
+	/// If the string isn't a valid UTF-8 string, the function returns None.
+	pub fn as_str(&self) -> Option<&str> {
+		str::from_utf8(self.as_bytes()).ok()
+	}
+
+	/// Returns the length of the String in bytes.
+	pub fn len(&self) -> usize {
+		self.data.len()
 	}
 
 	/// Returns the length of the String in characters count.
-	pub fn len(&self) -> usize {
-		self.as_str().len()
+	/// If the string isn't a valid UTF-8 string, the function returns None.
+	pub fn strlen(&self) -> Option<usize> {
+		Some(self.as_str()?.len())
 	}
 
 	/// Tells whether the string is empty.
@@ -112,15 +112,23 @@ impl String {
 		self.data.is_empty()
 	}
 
+	/// Appends the given byte `b` to the end of the string.
+	pub fn push(&mut self, b: u8) -> Result<(), Errno> {
+		self.data.push(b)
+	}
+
+	// TODO Adapt to non-UTF-8
 	/// Appends the given char `ch` to the end of the string.
-	pub fn push(&mut self, ch: char) -> Result<(), Errno> {
+	pub fn push_char(&mut self, ch: char) -> Result<(), Errno> {
 		match ch.len_utf8() {
 			1 => self.data.push(ch as u8)?,
+
 			_ => {
 				let val = ch as u32;
+
 				for i in 0..4 {
 					if let Err(e) = self.data.push(((val >> (8 * i)) & 0xff) as _) {
-						// TODO Clean
+						// Cancelling previous iterations
 						for _ in 0..i {
 							self.data.pop();
 						}
@@ -135,19 +143,14 @@ impl String {
 	}
 
 	// TODO Unit tests
-	/// Removes the last character from the string and returns it.
+	/// Removes the last byte from the string and returns it.
 	/// If the string is empty, the function returns None.
-	pub fn pop(&mut self) -> Option<char> {
-		if self.is_empty() {
-			return None;
-		}
-
-		// TODO
-		todo!();
+	pub fn pop(&mut self) -> Option<u8> {
+		self.data.pop()
 	}
 
 	/// Appends the string `other` to the current one.
-	pub fn push_str(&mut self, other: &String) -> Result<(), Errno> {
+	pub fn push_str(&mut self, other: &Self) -> Result<(), Errno> {
 		let mut v = other.data.failable_clone()?;
 		self.data.append(&mut v)
 	}
@@ -155,6 +158,15 @@ impl String {
 	/// Turns the string into an empty string.
 	pub fn clear(&mut self) {
 		self.data.clear();
+	}
+}
+
+impl Add for String {
+	type Output = Result<Self, Errno>;
+
+	fn add(mut self, other: Self) -> Self::Output {
+		self.push_str(&other)?;
+		Ok(self)
 	}
 }
 
@@ -207,13 +219,13 @@ impl FailableClone for String {
 
 impl Debug for String {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		f.write_str(self.as_str())
+		f.write_str(self.as_str().unwrap_or("<Invalid UTF-8>")) // TODO Find another way
 	}
 }
 
 impl fmt::Display for String {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		f.write_str(self.as_str())
+		f.write_str(self.as_str().unwrap_or("<Invalid UTF-8>")) // TODO Find another way
 	}
 }
 
@@ -338,7 +350,7 @@ mod test {
 		let mut s = String::new();
 		assert_eq!(s.len(), 0);
 
-		s.push('a').unwrap();
+		s.push(b'a').unwrap();
 		assert_eq!(s.len(), 1);
 		assert_eq!(s, "a");
 	}
@@ -349,7 +361,7 @@ mod test {
 		assert_eq!(s.len(), 0);
 
 		for i in 0..10 {
-			s.push('a').unwrap();
+			s.push(b'a').unwrap();
 			assert_eq!(s.len(), i + 1);
 		}
 		assert_eq!(s, "aaaaaaaaaa");

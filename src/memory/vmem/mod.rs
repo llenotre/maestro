@@ -7,9 +7,14 @@
 pub mod x86;
 
 use core::ffi::c_void;
+use crate::cpu;
+use crate::elf;
 use crate::errno::Errno;
+use crate::memory;
+use crate::multiboot;
 use crate::util::FailableClone;
 use crate::util::boxed::Box;
+use crate::util::math;
 
 /// Trait representing virtual memory context handler. This trait is the interface to manipulate
 /// virtual memory on any architecture. Each architecture has its own structure implementing this
@@ -26,37 +31,64 @@ pub trait VMem: FailableClone {
 
 	/// Maps the the given physical address `physaddr` to the given virtual address `virtaddr` with
 	/// the given flags.
+	/// This function automaticaly invalidates the page in the cache.
 	fn map(&mut self, physaddr: *const c_void, virtaddr: *const c_void, flags: u32)
 		-> Result<(), Errno>;
 	/// Maps the given range of physical address `physaddr` to the given range of virtual address
 	/// `virtaddr`. The range is `pages` pages large.
+	/// If the operation fails, the virtual memory is left altered midway.
+	/// This function automaticaly invalidates the page(s) in the cache.
 	fn map_range(&mut self, physaddr: *const c_void, virtaddr: *const c_void, pages: usize,
 		flags: u32) -> Result<(), Errno>;
 
-	/// Maps the physical address `ptr` to the same address in virtual memory with the given flags
-	/// `flags`.
-	fn identity(&mut self, ptr: *const c_void, flags: u32) -> Result<(), Errno> {
-		self.map(ptr, ptr, flags)
-	}
-	/// Identity maps a range beginning at physical address `from` with pages `pages` and flags
-	/// `flags`.
-	fn identity_range(&mut self, ptr: *const c_void, pages: usize, flags: u32)
-		-> Result<(), Errno> {
-		self.map_range(ptr, ptr, pages, flags)
-	}
-
 	/// Unmaps the page at virtual address `virtaddr`.
+	/// This function automaticaly invalidates the page in the cache.
 	fn unmap(&mut self, virtaddr: *const c_void) -> Result<(), Errno>;
 	/// Unmaps the given range beginning at virtual address `virtaddr` with size of `pages` pages.
+	/// If the operation fails, the virtual memory is left altered midway.
+	/// This function automaticaly invalidates the page(s) in the cache.
 	fn unmap_range(&mut self, virtaddr: *const c_void, pages: usize) -> Result<(), Errno>;
 
 	/// Binds the virtual memory context handler.
 	fn bind(&self);
 	/// Tells whether the handler is bound or not.
 	fn is_bound(&self) -> bool;
+
+	/// Invalides the page at address `addr`.
+	fn invalidate_page(&self, addr: *const c_void);
 	/// Flushes the modifications of the context if bound. This function should be called after
 	/// applying modifications to the context.
 	fn flush(&self);
+
+	/// Protects the kernel's read-only sections from writing.
+	fn protect_kernel(&mut self) -> Result<(), Errno> {
+		let boot_info = multiboot::get_boot_info();
+
+		let mut res = Ok(());
+		let f = | section: &elf::ELF32SectionHeader, _name: &[u8] | {
+			if section.sh_flags & elf::SHF_WRITE != 0
+				|| section.sh_addralign as usize != memory::PAGE_SIZE {
+				return true;
+			}
+
+			let phys_addr = memory::kern_to_phys(section.sh_addr as _);
+			let virt_addr = memory::kern_to_virt(section.sh_addr as _);
+			let pages = math::ceil_division(section.sh_size, memory::PAGE_SIZE as _) as usize;
+			if let Err(e) = self.map_range(phys_addr, virt_addr, pages as usize, x86::FLAG_USER) {
+				res = Err(e);
+				return false;
+			}
+
+			true
+		};
+
+		// Protecting kernel code from writting
+		elf::foreach_sections(memory::kern_to_virt(boot_info.elf_sections),
+			boot_info.elf_num as usize, boot_info.elf_shndx as usize,
+			boot_info.elf_entsize as usize, f);
+
+		res
+	}
 }
 
 /// Creates a new virtual memory context handler for the current architecture.
@@ -75,16 +107,16 @@ pub fn clone(vmem: &Box<dyn VMem>) -> Result<Box<dyn VMem>, Errno> {
 /// Tells whether the read-only pages protection is enabled.
 pub fn is_write_lock() -> bool {
 	unsafe {
-		(x86::cr0_get() & (1 << 16)) != 0
+		(cpu::cr0_get() & (1 << 16)) != 0
 	}
 }
 
 /// Sets whether the kernel can write to read-only pages.
 pub unsafe fn set_write_lock(lock: bool) {
 	if lock {
-		x86::cr0_set(1 << 16);
+		cpu::cr0_set(1 << 16);
 	} else {
-		x86::cr0_clear(1 << 16);
+		cpu::cr0_clear(1 << 16);
 	}
 }
 
@@ -101,17 +133,21 @@ pub unsafe fn write_lock_wrap<F: Fn() -> T, T>(f: F) -> T {
 
 /// Executes the given closure `f` while being bound to the given virtual memory context `vmem`.
 /// After execution, the function restores the previous context.
-pub fn vmem_switch<F: FnMut() -> T, T>(vmem: &dyn VMem, mut f: F) -> T {
+/// If the closure changes the current memory context, the behaviour is undefined.
+pub fn switch<F: FnMut() -> T, T>(vmem: &dyn VMem, mut f: F) -> T {
 	if vmem.is_bound() {
 		f()
 	} else {
+		// Getting the current vmem
 		let cr3 = unsafe {
-			x86::cr3_get()
+			cpu::cr3_get()
 		};
+		// Binding the temporary vmem
 		vmem.bind();
 
 		let result = f();
 
+		// Restoring the previous vmem
 		unsafe {
 			x86::paging_enable(cr3 as _);
 		}

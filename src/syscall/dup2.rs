@@ -3,12 +3,17 @@
 
 use crate::errno::Errno;
 use crate::process::Process;
-use crate::util;
+use crate::process::Regs;
 
 /// The implementation of the `dup2` syscall.
-pub fn dup2(proc: &mut Process, regs: &util::Regs) -> Result<i32, Errno> {
+pub fn dup2(regs: &Regs) -> Result<i32, Errno> {
 	let oldfd = regs.ebx;
 	let newfd = regs.ecx;
 
-	Ok(proc.duplicate_fd(oldfd, Some(newfd))?.get_id() as _)
+	let mutex = Process::get_current().unwrap();
+	let mut guard = mutex.lock();
+	let proc = guard.get_mut();
+
+	let newfd = proc.duplicate_fd(oldfd, Some(newfd))?;
+	Ok(newfd.get_id() as _)
 }

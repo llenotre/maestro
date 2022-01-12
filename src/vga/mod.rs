@@ -8,16 +8,15 @@ use crate::io;
 use crate::memory::vmem;
 use crate::memory;
 
+/// Type representing a VGA text mode character.
 pub type Char = u16;
+/// Type representing a VGA text mode color.
 pub type Color = u8;
+/// Type representing a VGA text mode position.
 pub type Pos = i16;
 
 /// Physical address of the VGA text buffer.
 pub const BUFFER_PHYS: *mut Char = 0xb8000 as _;
-/// Virtual address of the VGA text buffer.
-pub const BUFFER_VIRT: *mut Char = unsafe {
-	(memory::PROCESS_END as usize + BUFFER_PHYS as usize) as _
-};
 
 /// Width of the screen in characters under the VGA text mode.
 pub const WIDTH: Pos = 80;
@@ -62,10 +61,19 @@ pub const COLOR_WHITE: Color			= 0xf;
 /// VGA text mode default color.
 pub const DEFAULT_COLOR: Color = COLOR_WHITE | (COLOR_BLACK << 4);
 
+/// The beginning scanline for the cursor.
 pub const CURSOR_START: u8 = 0;
+/// The ending scanline for the cursor.
 pub const CURSOR_END: u8 = 15;
 
+/// Returns the virtual address of the VGA text buffer.
+#[inline]
+pub fn get_buffer_virt() -> *mut Char {
+	(memory::PROCESS_END as usize + BUFFER_PHYS as usize) as _
+}
+
 /// Returns the value for the given foreground color `fg` and background color `bg`.
+#[inline]
 pub fn entry_color(fg: Color, bg: Color) -> Color {
 	fg | (bg << 4)
 }
@@ -75,7 +83,7 @@ pub fn clear() {
 	for i in 0..(WIDTH * HEIGHT) {
 		unsafe {
 			vmem::write_lock_wrap(|| {
-				*BUFFER_VIRT.offset(i as isize) = (DEFAULT_COLOR as Char) << 8;
+				*get_buffer_virt().offset(i as isize) = (DEFAULT_COLOR as Char) << 8;
 			});
 		}
 	}
@@ -97,6 +105,20 @@ pub fn disable_cursor() {
 		io::outb(0x3d4, 0x0a);
 		io::outb(0x3d5, 0x20);
 	}
+}
+
+/// Returns the current position of the cursor.
+pub fn get_cursor_position() -> (Pos, Pos) {
+	let mut pos: u16 = 0;
+
+	unsafe {
+		io::outb(0x3d4, 0x0f);
+		pos |= io::inb(0x3d5) as u16;
+		io::outb(0x3d4, 0x0e);
+		pos |= (io::inb(0x3d5) as u16) << 8;
+	}
+
+	(pos as i16 % WIDTH, pos as i16 / WIDTH)
 }
 
 /// Moves the VGA text mode cursor to the given position.
@@ -131,7 +153,7 @@ pub fn putchar_color(c: char, color: Color, x: Pos, y: Pos) {
 	debug_assert!(pos < BUFFER_SIZE as usize);
 	unsafe {
 		vmem::write_lock_wrap(|| {
-			*BUFFER_VIRT.offset(pos as isize) = c;
+			*get_buffer_virt().offset(pos as isize) = c;
 		});
 	}
 }

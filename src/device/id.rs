@@ -3,8 +3,7 @@
 use crate::device::DeviceType;
 use crate::errno::Errno;
 use crate::util::container::id_allocator::IDAllocator;
-use crate::util::lock::mutex::Mutex;
-use crate::util::lock::mutex::MutexGuard;
+use crate::util::lock::Mutex;
 
 /// The number of major numbers.
 const MAJOR_COUNT: u32 = 256;
@@ -82,9 +81,9 @@ impl Drop for MajorBlock {
 }
 
 /// The major numbers allocator.
-static mut BLOCK_MAJOR_ALLOCATOR: Mutex<Option<IDAllocator>> = Mutex::new(None);
+static BLOCK_MAJOR_ALLOCATOR: Mutex<Option<IDAllocator>> = Mutex::new(None);
 /// The major numbers allocator.
-static mut CHAR_MAJOR_ALLOCATOR: Mutex<Option<IDAllocator>> = Mutex::new(None);
+static CHAR_MAJOR_ALLOCATOR: Mutex<Option<IDAllocator>> = Mutex::new(None);
 
 /// Allocates a major number.
 /// `device_type` is the type of device for the major block to be allocated.
@@ -92,16 +91,8 @@ static mut CHAR_MAJOR_ALLOCATOR: Mutex<Option<IDAllocator>> = Mutex::new(None);
 /// If the allocation fails, the function returns an Err.
 pub fn alloc_major(device_type: DeviceType, major: Option<u32>) -> Result<MajorBlock, Errno> {
 	let mut guard = match device_type {
-		DeviceType::Block => {
-			unsafe { // Safe because using mutex
-				MutexGuard::new(&mut BLOCK_MAJOR_ALLOCATOR)
-			}
-		},
-		DeviceType::Char => {
-			unsafe { // Safe because using mutex
-				MutexGuard::new(&mut CHAR_MAJOR_ALLOCATOR)
-			}
-		}
+		DeviceType::Block => BLOCK_MAJOR_ALLOCATOR.lock(),
+		DeviceType::Char => CHAR_MAJOR_ALLOCATOR.lock(),
 	};
 
 	let major_allocator = guard.get_mut();
@@ -119,16 +110,8 @@ pub fn alloc_major(device_type: DeviceType, major: Option<u32>) -> Result<MajorB
 /// **WARNING**: This function shouldn't be called directly, but only from the MajorBlock itself.
 fn free_major(block: &mut MajorBlock) {
 	let mut guard = match block.get_device_type() {
-		DeviceType::Block => {
-			unsafe { // Safe because using mutex
-				MutexGuard::new(&mut BLOCK_MAJOR_ALLOCATOR)
-			}
-		},
-		DeviceType::Char => {
-			unsafe { // Safe because using mutex
-				MutexGuard::new(&mut CHAR_MAJOR_ALLOCATOR)
-			}
-		}
+		DeviceType::Block => BLOCK_MAJOR_ALLOCATOR.lock(),
+		DeviceType::Char => CHAR_MAJOR_ALLOCATOR.lock(),
 	};
 
 	let major_allocator = guard.get_mut().as_mut().unwrap();

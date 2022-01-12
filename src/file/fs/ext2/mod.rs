@@ -23,29 +23,36 @@
 //! `(12 * n) + ((n/4) * n) + ((n/4)^^2 * n) + ((n/4)^^3 * n)`
 //! Where `n` is the size of a block.
 
+mod block_group_descriptor;
+mod directory_entry;
+mod inode;
+
+use block_group_descriptor::BlockGroupDescriptor;
 use core::cmp::max;
 use core::cmp::min;
 use core::mem::MaybeUninit;
 use core::mem::size_of;
 use core::mem::size_of_val;
-use core::ptr::copy_nonoverlapping;
 use core::slice;
-use crate::device::DeviceHandle;
 use crate::errno::Errno;
 use crate::errno;
 use crate::file::File;
+use crate::file::FileContent;
+use crate::file::FileLocation;
 use crate::file::FileType;
 use crate::file::INode;
 use crate::file::fs::Filesystem;
 use crate::file::fs::FilesystemType;
 use crate::file::path::Path;
-use crate::file;
 use crate::memory::malloc;
 use crate::time;
+use crate::util::FailableClone;
+use crate::util::IO;
 use crate::util::boxed::Box;
 use crate::util::container::string::String;
+use crate::util::container::vec::Vec;
 use crate::util::math;
-use crate::util;
+use inode::Ext2INode;
 
 // TODO Take into account user's UID/GID when allocating block/inode to handle reserved
 // blocks/inodes
@@ -72,9 +79,6 @@ const DEFAULT_BLOCKS_PER_GROUP: u32 = 1024;
 const DEFAULT_MOUNT_COUNT_BEFORE_FSCK: u16 = 1000;
 /// Default elapsed time in between each fsck in seconds.
 const DEFAULT_FSCK_INTERVAL: u32 = 16070400;
-
-/// The block offset of the Block Group Descriptor Table.
-const BGDT_BLOCK_OFFSET: u32 = 2; // TODO Compute using block size
 
 /// State telling that the filesystem is clean.
 const FS_STATE_CLEAN: u16 = 1;
@@ -117,108 +121,12 @@ const WRITE_REQUIRED_64_BITS: u32 = 0x2;
 /// Directory contents are stored in the form of a Binary Tree.
 const WRITE_REQUIRED_DIRECTORY_BINARY_TREE: u32 = 0x4;
 
-/// The maximum number of direct blocks for each inodes.
-const DIRECT_BLOCKS_COUNT: usize = 12;
-
-/// INode type: FIFO
-const INODE_TYPE_FIFO: u16 = 0x1000;
-/// INode type: Char device
-const INODE_TYPE_CHAR_DEVICE: u16 = 0x2000;
-/// INode type: Directory
-const INODE_TYPE_DIRECTORY: u16 = 0x4000;
-/// INode type: Block device
-const INODE_TYPE_BLOCK_DEVICE: u16 = 0x6000;
-/// INode type: Regular file
-const INODE_TYPE_REGULAR: u16 = 0x8000;
-/// INode type: Symbolic link
-const INODE_TYPE_SYMLINK: u16 = 0xa000;
-/// INode type: Socket
-const INODE_TYPE_SOCKET: u16 = 0xc000;
-
-/// User: Read, Write and Execute.
-const INODE_PERMISSION_IRWXU: u16 = 0o0700;
-/// User: Read.
-const INODE_PERMISSION_IRUSR: u16 = 0o0400;
-/// User: Write.
-const INODE_PERMISSION_IWUSR: u16 = 0o0200;
-/// User: Execute.
-const INODE_PERMISSION_IXUSR: u16 = 0o0100;
-/// Group: Read, Write and Execute.
-const INODE_PERMISSION_IRWXG: u16 = 0o0070;
-/// Group: Read.
-const INODE_PERMISSION_IRGRP: u16 = 0o0040;
-/// Group: Write.
-const INODE_PERMISSION_IWGRP: u16 = 0o0020;
-/// Group: Execute.
-const INODE_PERMISSION_IXGRP: u16 = 0o0010;
-/// Other: Read, Write and Execute.
-const INODE_PERMISSION_IRWXO: u16 = 0o0007;
-/// Other: Read.
-const INODE_PERMISSION_IROTH: u16 = 0o0004;
-/// Other: Write.
-const INODE_PERMISSION_IWOTH: u16 = 0o0002;
-/// Other: Execute.
-const INODE_PERMISSION_IXOTH: u16 = 0o0001;
-/// Setuid.
-const INODE_PERMISSION_ISUID: u16 = 0o4000;
-/// Setgid.
-const INODE_PERMISSION_ISGID: u16 = 0o2000;
-/// Sticky bit.
-const INODE_PERMISSION_ISVTX: u16 = 0o1000;
-
-/// Secure deletion
-const INODE_FLAG_SECURE_DELETION: u32 = 0x00001;
-/// Keep a copy of data when deleted
-const INODE_FLAG_DELETE_COPY: u32 = 0x00002;
-/// File compression
-const INODE_FLAG_COMPRESSION: u32 = 0x00004;
-/// Synchronous updates
-const INODE_FLAG_SYNC: u32 = 0x00008;
-/// Immutable file
-const INODE_FLAG_IMMUTABLE: u32 = 0x00010;
-/// Append only
-const INODE_FLAG_APPEND_ONLY: u32 = 0x00020;
-/// File is not included in 'dump' command
-const INODE_FLAG_NODUMP: u32 = 0x00040;
-/// Last accessed time should not updated
-const INODE_FLAG_ATIME_NOUPDATE: u32 = 0x00080;
-/// Hash indexed directory
-const INODE_FLAG_HASH_INDEXED: u32 = 0x10000;
-/// AFS directory
-const INODE_FLAG_AFS_DIRECTORY: u32 = 0x20000;
-/// Journal file data
-const INODE_FLAG_JOURNAL_FILE: u32 = 0x40000;
-
-/// The inode of the root directory.
-const ROOT_DIRECTORY_INODE: u32 = 2;
-/// The root directory's default mode.
-const ROOT_DIRECTORY_DEFAULT_MODE: u16 = INODE_PERMISSION_IRWXU
-	| INODE_PERMISSION_IRGRP | INODE_PERMISSION_IXGRP
-	| INODE_PERMISSION_IROTH | INODE_PERMISSION_IXOTH;
-
-/// Directory entry type indicator: Unknown
-const TYPE_INDICATOR_UNKNOWN: u8 = 0;
-/// Directory entry type indicator: Regular file
-const TYPE_INDICATOR_REGULAR: u8 = 1;
-/// Directory entry type indicator: Directory
-const TYPE_INDICATOR_DIRECTORY: u8 = 2;
-/// Directory entry type indicator: Char device
-const TYPE_INDICATOR_CHAR_DEVICE: u8 = 3;
-/// Directory entry type indicator: Block device
-const TYPE_INDICATOR_BLOCK_DEVICE: u8 = 4;
-/// Directory entry type indicator: FIFO
-const TYPE_INDICATOR_FIFO: u8 = 5;
-/// Directory entry type indicator: Socket
-const TYPE_INDICATOR_SOCKET: u8 = 6;
-/// Directory entry type indicator: Symbolic link
-const TYPE_INDICATOR_SYMLINK: u8 = 7;
-
 /// Reads an object of the given type on the given device.
 /// `offset` is the offset in bytes on the device.
 /// `io` is the I/O interface of the device.
 /// The function is marked unsafe because if the read object is invalid, the behaviour is
 /// undefined.
-unsafe fn read<T>(offset: u64, io: &mut dyn DeviceHandle) -> Result<T, Errno> {
+unsafe fn read<T>(offset: u64, io: &mut dyn IO) -> Result<T, Errno> {
 	let size = size_of::<T>();
 	let mut obj = MaybeUninit::<T>::uninit();
 
@@ -233,7 +141,7 @@ unsafe fn read<T>(offset: u64, io: &mut dyn DeviceHandle) -> Result<T, Errno> {
 /// `obj` is the object to write.
 /// `offset` is the offset in bytes on the device.
 /// `io` is the I/O interface of the device.
-fn write<T>(obj: &T, offset: u64, io: &mut dyn DeviceHandle) -> Result<(), Errno> {
+fn write<T>(obj: &T, offset: u64, io: &mut dyn IO) -> Result<(), Errno> {
 	let size = size_of_val(obj);
 	let ptr = obj as *const T as *const u8;
 	let buffer = unsafe {
@@ -250,7 +158,7 @@ fn write<T>(obj: &T, offset: u64, io: &mut dyn DeviceHandle) -> Result<(), Errno
 /// `io` is the I/O interface of the device.
 /// `buff` is the buffer to write the data on.
 /// If the block is outside of the storage's bounds, the function returns a error.
-fn read_block(i: u64, superblock: &Superblock, io: &mut dyn DeviceHandle, buff: &mut [u8])
+fn read_block(i: u64, superblock: &Superblock, io: &mut dyn IO, buff: &mut [u8])
 	-> Result<(), Errno> {
 	let blk_size = superblock.get_block_size() as u64;
 	io.read(i * blk_size, buff)?;
@@ -264,7 +172,7 @@ fn read_block(i: u64, superblock: &Superblock, io: &mut dyn DeviceHandle, buff: 
 /// `io` is the I/O interface of the device.
 /// `buff` is the buffer to read from.
 /// If the block is outside of the storage's bounds, the function returns a error.
-fn write_block(i: u64, superblock: &Superblock, io: &mut dyn DeviceHandle, buff: &[u8])
+fn write_block(i: u64, superblock: &Superblock, io: &mut dyn IO, buff: &[u8])
 	-> Result<(), Errno> {
 	let blk_size = superblock.get_block_size() as u64;
 	io.write(i * blk_size, buff)?;
@@ -274,7 +182,7 @@ fn write_block(i: u64, superblock: &Superblock, io: &mut dyn DeviceHandle, buff:
 
 /// The ext2 superblock structure.
 #[repr(C, packed)]
-struct Superblock {
+pub struct Superblock {
 	/// Total number of inodes in the filesystem.
 	total_inodes: u32,
 	/// Total number of blocks in the filesystem.
@@ -346,7 +254,7 @@ struct Superblock {
 	volume_name: [u8; 16],
 	/// The path the volume was last mounted to.
 	last_mount_path: [u8; 64],
-	/// TODO doc
+	/// Used compression algorithms.
 	compression_algorithms: u32,
 	/// The number of blocks to preallocate for files.
 	files_preallocate_count: u8,
@@ -369,7 +277,7 @@ struct Superblock {
 
 impl Superblock {
 	/// Creates a new instance by reading from the given device.
-	pub fn read(io: &mut dyn DeviceHandle) -> Result<Self, Errno> {
+	pub fn read(io: &mut dyn IO) -> Result<Self, Errno> {
 		unsafe {
 			read::<Self>(SUPERBLOCK_OFFSET, io)
 		}
@@ -381,14 +289,18 @@ impl Superblock {
 	}
 
 	/// Returns the size of a block.
-	pub fn get_block_size(&self) -> usize {
+	pub fn get_block_size(&self) -> u32 {
 		math::pow2(self.block_size_log + 10) as _
+	}
+
+	/// Returns the block offset of the Block Group Descriptor Table.
+	pub fn get_bgdt_offset(&self) -> u64 {
+		(SUPERBLOCK_OFFSET / self.get_block_size() as u64) + 1
 	}
 
 	/// Returns the number of block groups.
 	fn get_block_groups_count(&self) -> u32 {
-		// TODO Do not take the last group if not entire? Or mark non-existing blocks as used?
-		math::ceil_division(self.total_blocks, self.blocks_per_group)
+		self.total_blocks / self.blocks_per_group
 	}
 
 	/// Returns the size of a fragment.
@@ -408,13 +320,12 @@ impl Superblock {
 	/// Returns the first inode that isn't reserved.
 	pub fn get_first_available_inode(&self) -> u32 {
 		if self.major_version >= 1 {
-			max(self.first_non_reserved_inode, ROOT_DIRECTORY_INODE + 1)
+			max(self.first_non_reserved_inode, inode::ROOT_DIRECTORY_INODE + 1)
 		} else {
 			10
 		}
 	}
 
-	// TODO Optimize
 	/// Searches in the given bitmap block `bitmap` for the first element that is not set.
 	/// The function returns the index to the element. If every elements are set, the function
 	/// returns None.
@@ -438,10 +349,9 @@ impl Superblock {
 	/// `io` is the I/O interface.
 	/// `start` is the starting block.
 	/// `size` is the number of entries.
-	fn search_bitmap(&self, io: &mut dyn DeviceHandle, start: u32, size: u32)
-		-> Result<Option<u32>, Errno> {
+	fn search_bitmap(&self, io: &mut dyn IO, start: u32, size: u32) -> Result<Option<u32>, Errno> {
 		let blk_size = self.get_block_size();
-		let mut buff = malloc::Alloc::<u8>::new_default(blk_size)?;
+		let mut buff = malloc::Alloc::<u8>::new_default(blk_size as _)?;
 		let mut i = 0;
 
 		while (i * (blk_size * 8) as u32) < size {
@@ -463,10 +373,9 @@ impl Superblock {
 	/// `start` is the starting block.
 	/// `i` is the index of the entry to modify.
 	/// `val` is the value to set the entry to.
-	fn set_bitmap(&self, io: &mut dyn DeviceHandle, start: u32, i: u32, val: bool)
-		-> Result<(), Errno> {
+	fn set_bitmap(&self, io: &mut dyn IO, start: u32, i: u32, val: bool) -> Result<(), Errno> {
 		let blk_size = self.get_block_size();
-		let mut buff = malloc::Alloc::<u8>::new_default(blk_size)?;
+		let mut buff = malloc::Alloc::<u8>::new_default(blk_size as _)?;
 
 		let bitmap_blk_index = start + (i / (blk_size * 8) as u32);
 		read_block(bitmap_blk_index as _, self, io, buff.get_slice_mut())?;
@@ -484,7 +393,7 @@ impl Superblock {
 
 	/// Returns the id of a free inode in the filesystem.
 	/// `io` is the I/O interface.
-	pub fn get_free_inode(&self, io: &mut dyn DeviceHandle) -> Result<u32, Errno> {
+	pub fn get_free_inode(&self, io: &mut dyn IO) -> Result<u32, Errno> {
 		for i in 0..self.get_block_groups_count() {
 			let bgd = BlockGroupDescriptor::read(i as _, self, io)?;
 			if bgd.unallocated_inodes_number > 0 {
@@ -503,7 +412,7 @@ impl Superblock {
 	/// `inode` is the inode number.
 	/// `directory` tells whether the inode is allocated for a directory.
 	/// If the inode is already marked as used, the behaviour is undefined.
-	pub fn mark_inode_used(&self, io: &mut dyn DeviceHandle, inode: u32, directory: bool)
+	pub fn mark_inode_used(&self, io: &mut dyn IO, inode: u32, directory: bool)
 		-> Result<(), Errno> {
 		debug_assert!(inode >= 1);
 
@@ -517,7 +426,7 @@ impl Superblock {
 		let bitfield_index = (inode - 1) % self.inodes_per_group;
 		self.set_bitmap(io, bgd.inode_usage_bitmap_addr, bitfield_index, true)?;
 
-		bgd.write(group, io)
+		bgd.write(group, self, io)
 	}
 
 	/// Marks the inode `inode` available on the filesystem.
@@ -525,8 +434,7 @@ impl Superblock {
 	/// `inode` is the inode number.
 	/// `directory` tells whether the inode is allocated for a directory.
 	/// If the inode is already marked as free, the behaviour is undefined.
-	pub fn free_inode(&self, io: &mut dyn DeviceHandle, inode: u32, directory: bool)
-		-> Result<(), Errno> {
+	pub fn free_inode(&self, io: &mut dyn IO, inode: u32, directory: bool) -> Result<(), Errno> {
 		debug_assert!(inode >= 1);
 
 		let group = (inode - 1) / self.inodes_per_group;
@@ -539,12 +447,12 @@ impl Superblock {
 		let bitfield_index = (inode - 1) % self.inodes_per_group;
 		self.set_bitmap(io, bgd.inode_usage_bitmap_addr, bitfield_index, false)?;
 
-		bgd.write(group, io)
+		bgd.write(group, self, io)
 	}
 
 	/// Returns the id of a free block in the filesystem.
 	/// `io` is the I/O interface.
-	pub fn get_free_block(&self, io: &mut dyn DeviceHandle) -> Result<u32, Errno> {
+	pub fn get_free_block(&self, io: &mut dyn IO) -> Result<u32, Errno> {
 		for i in 0..self.get_block_groups_count() {
 			let bgd = BlockGroupDescriptor::read(i as _, self, io)?;
 			if bgd.unallocated_blocks_number > 0 {
@@ -561,7 +469,7 @@ impl Superblock {
 	/// Marks the block `blk` used on the filesystem.
 	/// `io` is the I/O interface.
 	/// `blk` is the block number.
-	pub fn mark_block_used(&self, io: &mut dyn DeviceHandle, blk: u32) -> Result<(), Errno> {
+	pub fn mark_block_used(&self, io: &mut dyn IO, blk: u32) -> Result<(), Errno> {
 		let group = blk / self.blocks_per_group;
 		let mut bgd = BlockGroupDescriptor::read(group, self, io)?;
 		bgd.unallocated_blocks_number -= 1;
@@ -569,13 +477,13 @@ impl Superblock {
 		let bitfield_index = blk % self.blocks_per_group;
 		self.set_bitmap(io, bgd.block_usage_bitmap_addr, bitfield_index, true)?;
 
-		bgd.write(group, io)
+		bgd.write(group, self, io)
 	}
 
 	/// Marks the block `blk` available on the filesystem.
 	/// `io` is the I/O interface.
 	/// `blk` is the block number.
-	pub fn free_block(&self, io: &mut dyn DeviceHandle, blk: u32) -> Result<(), Errno> {
+	pub fn free_block(&self, io: &mut dyn IO, blk: u32) -> Result<(), Errno> {
 		let group = blk / self.blocks_per_group;
 		let mut bgd = BlockGroupDescriptor::read(group, self, io)?;
 		bgd.unallocated_blocks_number += 1;
@@ -583,784 +491,129 @@ impl Superblock {
 		let bitfield_index = blk % self.blocks_per_group;
 		self.set_bitmap(io, bgd.block_usage_bitmap_addr, bitfield_index, false)?;
 
-		bgd.write(group, io)
+		bgd.write(group, self, io)
 	}
 
 	/// Writes the superblock on the device.
-	pub fn write(&self, io: &mut dyn DeviceHandle) -> Result<(), Errno> {
+	pub fn write(&self, io: &mut dyn IO) -> Result<(), Errno> {
 		write::<Self>(self, SUPERBLOCK_OFFSET, io)
-	}
-}
-
-/// Structure representing a block group descriptor to be stored into the Block Group Descriptor
-/// Table (BGDT).
-#[repr(C, packed)]
-struct BlockGroupDescriptor {
-	/// The block address of the block usage bitmap.
-	block_usage_bitmap_addr: u32,
-	/// The block address of the inode usage bitmap.
-	inode_usage_bitmap_addr: u32,
-	/// Starting block address of inode table.
-	inode_table_start_addr: u32,
-	/// Number of unallocated blocks in group.
-	unallocated_blocks_number: u16,
-	/// Number of unallocated inodes in group.
-	unallocated_inodes_number: u16,
-	/// Number of directories in group.
-	directories_number: u16,
-
-	/// Structure padding.
-	_padding: [u8; 14],
-}
-
-impl BlockGroupDescriptor {
-	/// Reads the `i`th block group descriptor from the given device.
-	/// `superblock` is the filesystem's superblock.
-	/// `io` is the I/O interface.
-	pub fn read(i: u32, superblock: &Superblock, io: &mut dyn DeviceHandle)
-		-> Result<Self, Errno> {
-		let off = (superblock.get_block_size() * BGDT_BLOCK_OFFSET as usize)
-			+ (i as usize * size_of::<Self>());
-		unsafe {
-			read::<Self>(off as _, io)
-		}
-	}
-
-	/// Writes the current block group descriptor.
-	/// `i` the id of the group descriptor to write.
-	/// `io` is the I/O interface.
-	pub fn write(&self, i: u32, io: &mut dyn DeviceHandle)
-		-> Result<(), Errno> {
-		let bgdt_off = BGDT_BLOCK_OFFSET as usize * DEFAULT_BLOCK_SIZE as usize;
-		let off = (bgdt_off + size_of::<Self>() * i as usize) as u64;
-		write(self, off, io)
-	}
-}
-
-/// An inode represents a file in the filesystem. The name of the file is not included in the inode
-/// but in the directory entry associated with it since several entries can refer to the same
-/// inode (hard links).
-#[repr(C, packed)]
-struct Ext2INode {
-	/// Type and permissions.
-	mode: u16,
-	/// User ID.
-	uid: u16,
-	/// Lower 32 bits of size in bytes.
-	size_low: u32,
-	/// Timestamp of the last modification of the metadata.
-	ctime: u32,
-	/// Timestamp of the last modification of the content.
-	mtime: u32,
-	/// Timestamp of the last access.
-	atime: u32,
-	/// Timestamp of the deletion.
-	dtime: u32,
-	/// Group ID.
-	gid: u16,
-	/// The number of hard links to this inode.
-	hard_links_count: u16,
-	/// The number of sectors used by this inode.
-	used_sectors: u32,
-	/// INode flags.
-	flags: u32,
-	/// OS-specific value.
-	os_specific_0: u32,
-	/// Direct block pointers.
-	direct_block_ptrs: [u32; DIRECT_BLOCKS_COUNT],
-	/// Simply indirect block pointer.
-	singly_indirect_block_ptr: u32,
-	/// Doubly indirect block pointer.
-	doubly_indirect_block_ptr: u32,
-	/// Triply indirect block pointer.
-	triply_indirect_block_ptr: u32,
-	/// Generation number.
-	generation: u32,
-	/// TODO doc
-	extended_attributes_block: u32,
-	/// Higher 32 bits of size in bytes.
-	size_high: u32,
-	/// Block address of fragment.
-	fragment_addr: u32,
-	/// OS-specific value.
-	os_specific_1: [u8; 12],
-}
-
-impl Ext2INode {
-	/// Returns the offset of the inode on the disk in bytes.
-	/// `i` is the inode's index (starting at `1`).
-	/// `superblock` is the filesystem's superblock.
-	/// `io` is the I/O interface.
-	fn get_disk_offset(i: u32, superblock: &Superblock, io: &mut dyn DeviceHandle)
-		-> Result<u64, Errno> {
-		let blk_size = superblock.get_block_size();
-		let blk_grp = (i - 1) / superblock.inodes_per_group;
-		let inode_off = (i - 1) % superblock.inodes_per_group;
-		let inode_size = superblock.get_inode_size();
-		let inode_table_blk_off = (inode_off * inode_size as u32) / (blk_size as u32);
-
-		let bgd = BlockGroupDescriptor::read(blk_grp, superblock, io)?;
-		let inode_table_blk = bgd.inode_table_start_addr + inode_table_blk_off;
-		Ok((inode_table_blk as u64 * blk_size as u64) + (inode_off as u64 * inode_size as u64))
-	}
-
-	/// Returns the mode for the given file `file`.
-	fn get_file_mode(file: &File) -> u16 {
-		let t = match file.get_file_type() {
-			FileType::FIFO => INODE_TYPE_FIFO,
-			FileType::CharDevice => INODE_TYPE_CHAR_DEVICE,
-			FileType::Directory => INODE_TYPE_DIRECTORY,
-			FileType::BlockDevice => INODE_TYPE_BLOCK_DEVICE,
-			FileType::Regular => INODE_TYPE_REGULAR,
-			FileType::Link => INODE_TYPE_SYMLINK,
-			FileType::Socket => INODE_TYPE_SOCKET,
-		};
-
-		file.get_mode() | t
-	}
-
-	/// Reads the `i`th inode from the given device. The index `i` starts at `1`.
-	/// `superblock` is the filesystem's superblock.
-	/// `io` is the I/O interface.
-	pub fn read(i: u32, superblock: &Superblock, io: &mut dyn DeviceHandle)
-		-> Result<Self, Errno> {
-		let off = Self::get_disk_offset(i, superblock, io)?;
-		unsafe {
-			read::<Self>(off, io)
-		}
-	}
-
-	/// Returns the type of the file.
-	pub fn get_type(&self) -> FileType {
-		let file_type = self.mode & 0xf000;
-
-		match file_type {
-			INODE_TYPE_FIFO => FileType::FIFO,
-			INODE_TYPE_CHAR_DEVICE => FileType::CharDevice,
-			INODE_TYPE_DIRECTORY => FileType::Directory,
-			INODE_TYPE_BLOCK_DEVICE => FileType::BlockDevice,
-			INODE_TYPE_REGULAR => FileType::Regular,
-			INODE_TYPE_SYMLINK => FileType::Link,
-			INODE_TYPE_SOCKET => FileType::Socket,
-
-			_ => FileType::Regular,
-		}
-	}
-
-	/// Returns the permissions of the file.
-	pub fn get_permissions(&self) -> file::Mode {
-		self.mode & 0x0fff
-	}
-
-	/// Returns the size of the file.
-	/// `superblock` is the filesystem's superblock.
-	pub fn get_size(&self, superblock: &Superblock) -> u64 {
-		let has_version = superblock.major_version >= 1;
-		let has_feature = superblock.write_required_features & WRITE_REQUIRED_64_BITS != 0;
-
-		if has_version && has_feature {
-			((self.size_high as u64) << 32) | (self.size_low as u64)
-		} else {
-			self.size_low as u64
-		}
-	}
-
-	/// Sets the file's size.
-	/// `superblock` is the filesystem's superblock.
-	/// `size` is the file's size.
-	fn set_size(&mut self, superblock: &Superblock, size: u64) {
-		let has_version = superblock.major_version >= 1;
-		let has_feature = superblock.write_required_features & WRITE_REQUIRED_64_BITS != 0;
-
-		if has_version && has_feature {
-			self.size_high = ((size >> 32) & 0xffff) as u32;
-			self.size_low = (size & 0xffff) as u32;
-		} else {
-			self.size_low = size as u32;
-		}
-	}
-
-	/// Turns a block offset into an Option./ Namely, if the block offset is zero, the function
-	/// returns None.
-	fn blk_offset_to_option(blk: u32) -> Option<u32> {
-		if blk != 0 {
-			Some(blk)
-		} else {
-			None
-		}
-	}
-
-	/// Resolves block indirections.
-	/// `n` is the number of indirections to resolve.
-	/// `begin` is the beginning block.
-	/// `off` is the offset of the block relative to the specified beginning block.
-	/// `superblock` is the filesystem's superblock.
-	/// `io` is the I/O interface.
-	/// If the block doesn't exist, the function returns None.
-	fn resolve_indirections(n: usize, begin: u32, off: u32, superblock: &Superblock,
-		io: &mut dyn DeviceHandle) -> Result<Option<u32>, Errno> {
-		let blk_size = superblock.get_block_size();
-		let entries_per_blk = blk_size / size_of::<u32>();
-
-		let mut b = begin;
-		for i in (0..n).rev() {
-			let inner_off = off / ((i * entries_per_blk) as u32);
-			let byte_off = (begin as u64 * blk_size as u64) + (inner_off as u64);
-			b = unsafe {
-				read::<u32>(byte_off, io)?
-			};
-
-			if b == 0 {
-				break;
-			}
-		}
-
-		Ok(Self::blk_offset_to_option(b))
-	}
-
-	/// Allocates a new block for the content of the file through block indirections.
-	/// `n` is the number of indirections to resolve.
-	/// `begin` is the beginning block.
-	/// `off` is the offset of the block relative to the specified beginning block.
-	/// `superblock` is the filesystem's superblock.
-	/// `io` is the I/O interface.
-	fn indirections_alloc(n: usize, begin: u32, off: u32, superblock: &Superblock,
-		io: &mut dyn DeviceHandle) -> Result<u32, Errno> {
-		let blk_size = superblock.get_block_size();
-		let entries_per_blk = blk_size / size_of::<u32>();
-
-		let mut b = begin;
-		for i in (0..(n + 1)).rev() {
-			let inner_off = off / ((i * entries_per_blk) as u32);
-			let byte_off = (begin as u64 * blk_size as u64) + (inner_off as u64);
-
-			if b == 0 {
-				let blk = superblock.get_free_block(io)?;
-				superblock.mark_block_used(io, blk)?;
-				write::<u32>(&blk, byte_off, io)?;
-			} else {
-				b = unsafe {
-					read::<u32>(byte_off, io)?
-				};
-			}
-		}
-
-		Ok(b)
-	}
-
-	/// Returns the block id of the node's content block at the given offset `i`.
-	/// `i` is the block offset in the node's content.
-	/// `superblock` is the filesystem's superblock.
-	/// `io` is the I/O interface.
-	/// If the block doesn't exist, the function returns None.
-	fn get_content_block_off(&self, i: usize, superblock: &Superblock, io: &mut dyn DeviceHandle)
-		-> Result<Option<u32>, Errno> {
-		let blk_size = superblock.get_block_size();
-		let entries_per_blk = blk_size / size_of::<u32>();
-
-		if i < DIRECT_BLOCKS_COUNT {
-			Ok(Self::blk_offset_to_option(self.direct_block_ptrs[i]))
-		} else if i < DIRECT_BLOCKS_COUNT + entries_per_blk {
-			let target = (i - DIRECT_BLOCKS_COUNT) as u32;
-			Self::resolve_indirections(1, self.singly_indirect_block_ptr, target, superblock, io)
-		} else if i < DIRECT_BLOCKS_COUNT + (entries_per_blk * entries_per_blk) {
-			let target = (i - DIRECT_BLOCKS_COUNT - entries_per_blk) as u32;
-			Self::resolve_indirections(2, self.doubly_indirect_block_ptr, target, superblock, io)
-		} else {
-			#[allow(clippy::suspicious_operation_groupings)]
-			let target = (i - DIRECT_BLOCKS_COUNT - (entries_per_blk * entries_per_blk)) as u32;
-			Self::resolve_indirections(3, self.triply_indirect_block_ptr, target, superblock, io)
-		}
-	}
-
-	/// Allocates a block for the node's content block at the given offset `i`.
-	/// If the block is already allocated, the function does nothing.
-	/// `i` is the block offset in the node's content.
-	/// `superblock` is the filesystem's superblock.
-	/// `io` is the I/O interface.
-	/// On success, the function returns the allocated final block offset.
-	fn alloc_content_block(&mut self, i: usize, superblock: &Superblock, io: &mut dyn DeviceHandle)
-		-> Result<u32, Errno> {
-		let blk_size = superblock.get_block_size();
-		let entries_per_blk = blk_size / size_of::<u32>();
-
-		if i < DIRECT_BLOCKS_COUNT {
-			let blk = superblock.get_free_block(io)?;
-			self.direct_block_ptrs[i] = blk;
-			superblock.mark_block_used(io, blk)?;
-
-			Ok(blk)
-		} else if i < DIRECT_BLOCKS_COUNT + entries_per_blk {
-			let target = (i - DIRECT_BLOCKS_COUNT) as u32;
-			Self::indirections_alloc(1, self.singly_indirect_block_ptr, target, superblock, io)
-		} else if i < DIRECT_BLOCKS_COUNT + (entries_per_blk * entries_per_blk) {
-			let target = (i - DIRECT_BLOCKS_COUNT - entries_per_blk) as u32;
-			Self::indirections_alloc(2, self.doubly_indirect_block_ptr, target, superblock, io)
-		} else {
-			#[allow(clippy::suspicious_operation_groupings)]
-			let target = (i - DIRECT_BLOCKS_COUNT - (entries_per_blk * entries_per_blk)) as u32;
-			Self::indirections_alloc(3, self.triply_indirect_block_ptr, target, superblock, io)
-		}
-	}
-
-	/// Frees a content block at block offset `i` in file.
-	/// If the block isn't allocated, the function does nothing.
-	/// `i` is the id of the block.
-	/// `superblock` is the filesystem's superblock.
-	/// `io` is the I/O interface.
-	fn free_content_block(&mut self, _i: usize, _superblock: &Superblock,
-		_io: &mut dyn DeviceHandle) {
-		// TODO
-		todo!();
-	}
-
-	/// Reads the content of the inode.
-	/// `off` is the offset at which the inode is read.
-	/// `buff` is the buffer in which the data is to be written.
-	/// `superblock` is the filesystem's superblock.
-	/// `io` is the I/O interface.
-	pub fn read_content(&self, off: u64, buff: &mut [u8], superblock: &Superblock,
-		io: &mut dyn DeviceHandle) -> Result<(), Errno> {
-		let size = self.get_size(&superblock);
-		if off > size || off + buff.len() as u64 > size {
-			return Err(errno::EINVAL);
-		}
-
-		let blk_size = superblock.get_block_size();
-		let mut blk_buff = malloc::Alloc::<u8>::new_default(blk_size)?;
-
-		let mut i = 0;
-		while i < buff.len() {
-			let blk_off = i / blk_size;
-			let blk_inner_off = i % blk_size;
-			let blk_off = self.get_content_block_off(blk_off as _, superblock, io)?.unwrap();
-			read_block(blk_off as _, superblock, io, blk_buff.get_slice_mut())?;
-
-			let len = min(buff.len() - i, blk_size - blk_inner_off);
-			unsafe { // Safe because staying in range
-				copy_nonoverlapping(&blk_buff.get_slice()[blk_inner_off] as *const u8,
-					&mut buff[i] as *mut u8,
-					len);
-			}
-
-			i += len;
-		}
-
-		Ok(())
-	}
-
-	/// Writes the content of the inode.
-	/// `off` is the offset at which the inode is written.
-	/// `buff` is the buffer in which the data is to be written.
-	/// `superblock` is the filesystem's superblock.
-	/// `io` is the I/O interface.
-	pub fn write_content(&mut self, off: u64, buff: &[u8], superblock: &Superblock,
-		io: &mut dyn DeviceHandle) -> Result<(), Errno> {
-		let curr_size = self.get_size(superblock);
-		if off > curr_size {
-			return Err(errno::EINVAL);
-		}
-
-		let blk_size = superblock.get_block_size();
-		let mut blk_buff = malloc::Alloc::<u8>::new_default(blk_size)?;
-
-		let mut i = 0;
-		while i < buff.len() {
-			let blk_off = i / blk_size;
-			let blk_inner_off = i % blk_size;
-			let blk_off = {
-				if let Some(blk_off) = self.get_content_block_off(blk_off as _, superblock, io)? {
-					blk_off
-				} else {
-					self.alloc_content_block(i, superblock, io)?
-				}
-			};
-			read_block(blk_off as _, superblock, io, blk_buff.get_slice_mut())?;
-
-			let len = min(buff.len() - i, blk_size - blk_inner_off);
-			unsafe { // Safe because staying in range
-				copy_nonoverlapping(&buff[i] as *const u8,
-					&mut blk_buff.get_slice_mut()[blk_inner_off] as *mut u8,
-					len);
-			}
-			write_block(blk_off as _, superblock, io, blk_buff.get_slice_mut())?;
-
-			i += len;
-		}
-
-		let new_size = off + buff.len() as u64;
-		if new_size > curr_size {
-			self.set_size(superblock, new_size);
-		}
-		Ok(())
-	}
-
-	/// Reads the directory entry at offset `off` and returns it.
-	/// `superblock` is the filesystem's superblock.
-	/// `io` is the I/O interface.
-	/// `off` is the offset of the directory entry.
-	/// If the file is not a directory, the behaviour is undefined.
-	fn read_dirent(&self, superblock: &Superblock, io: &mut dyn DeviceHandle, off: u64)
-		-> Result<Box<DirectoryEntry>, Errno> {
-		let mut buff: [u8; 8] = [0; 8];
-		self.read_content(off as _, &mut buff, superblock, io)?;
-		let entry = unsafe {
-			DirectoryEntry::from(&buff)?
-		};
-
-		let mut buff = malloc::Alloc::<u8>::new_default(entry.total_size as _)?;
-		self.read_content(off as _, buff.get_slice_mut(), superblock, io)?;
-
-		unsafe {
-			DirectoryEntry::from(buff.get_slice())
-		}
-	}
-
-	/// Writes the directory entry at offset `off`.
-	/// `superblock` is the filesystem's superblock.
-	/// `io` is the I/O interface.
-	/// `off` is the offset of the directory entry.
-	/// If the file is not a directory, the behaviour is undefined.
-	fn write_dirent(&mut self, superblock: &Superblock, io: &mut dyn DeviceHandle,
-		entry: &DirectoryEntry, off: u64) -> Result<(), Errno> {
-		let buff = unsafe {
-			slice::from_raw_parts(entry as *const _ as *const u8, entry.total_size as _)
-		};
-		self.write_content(off, buff, superblock, io)
-	}
-
-	/// Iterates over directory entries and calls the given function `f` for each.
-	/// The function takes the offset of the entry in the inode and the entry itself.
-	/// Free entries are also included.
-	/// `f` returns a boolean telling whether the iteration may continue.
-	/// `superblock` is the filesystem's superblock.
-	/// `io` is the I/O interface.
-	/// If the file is not a directory, the behaviour is undefined.
-	pub fn foreach_directory_entry<F: FnMut(u64, Box<DirectoryEntry>) -> bool>(&self, mut f: F,
-		superblock: &Superblock, io: &mut dyn DeviceHandle) -> Result<(), Errno> {
-		debug_assert_eq!(self.get_type(), FileType::Directory);
-
-		let blk_size = superblock.get_block_size();
-		let mut buff = malloc::Alloc::<u8>::new_default(blk_size)?;
-
-		let size = self.get_size(superblock);
-		let mut i = 0;
-		while i < size {
-			let len = min((size - i) as usize, blk_size);
-			self.read_content(i, &mut buff.get_slice_mut()[..len], superblock, io)?;
-
-			let mut j = 0;
-			while j < len {
-				// Safe because the data is block-aligned and an entry cannot be larger than the
-				// size of a block
-				let entry = unsafe {
-					DirectoryEntry::from(&buff.get_slice()[j..len])?
-				};
-				let total_size = entry.total_size as usize;
-
-				if !f(i + j as u64, entry) {
-					return Ok(());
-				}
-
-				j += total_size;
-			}
-
-			i += blk_size as u64;
-		}
-
-		Ok(())
-	}
-
-	/// Returns the directory entry with the given name `name`.
-	/// `superblock` is the filesystem's superblock.
-	/// `io` is the I/O interface.
-	/// If the entry doesn't exist, the function returns None.
-	/// If the file is not a directory, the behaviour is undefined.
-	pub fn get_directory_entry(&self, name: &str, superblock: &Superblock,
-		io: &mut dyn DeviceHandle) -> Result<Option<Box<DirectoryEntry>>, Errno> {
-		let mut entry = None;
-
-		// TODO If the binary tree feature is enabled, use it
-		self.foreach_directory_entry(| _, e | {
-			if !e.is_free() && e.get_name(superblock) == name {
-				entry = Some(e);
-				false
-			} else {
-				true
-			}
-		}, superblock, io)?;
-
-		Ok(entry)
-	}
-
-	// TODO Take into account the fact that the last entry may be expanded if needed
-	/// Looks for a free entry in the inode.
-	/// `superblock` is the filesystem's superblock.
-	/// `io` is the I/O interface.
-	/// `min_size` is the minimum size of the entry in bytes.
-	/// If the function finds an entry, it returns its offset. Else, the function returns None.
-	fn get_free_entry(&self, superblock: &Superblock, io: &mut dyn DeviceHandle, min_size: usize)
-		-> Result<Option<u64>, Errno> {
-		let mut off_option = None;
-
-		self.foreach_directory_entry(| off, e | {
-			if e.is_free() && e.total_size as usize >= min_size {
-				off_option = Some(off);
-				false
-			} else {
-				true
-			}
-		}, superblock, io)?;
-
-		Ok(off_option)
-	}
-
-	/// Adds a new entry to the current directory.
-	/// `superblock` is the filesystem's superblock.
-	/// `io` is the I/O interface.
-	/// `entry_inode` is the inode of the entry.
-	/// `name` is the name of the entry.
-	/// `file_type` is the type of the entry.
-	/// If the block allocation fails or if the entry name is already used, the function returns an
-	/// error.
-	/// If the file is not a directory, the behaviour is undefined.
-	pub fn add_dirent(&mut self, superblock: &Superblock, io: &mut dyn DeviceHandle,
-		entry_inode: u32, name: &String, file_type: FileType) -> Result<(), Errno> {
-		let blk_size = superblock.get_block_size();
-		let name_length = name.as_bytes().len();
-		let entry_size = 8 + name_length;
-		if entry_size > blk_size {
-			return Err(errno::ENAMETOOLONG);
-		}
-
-		if let Some(free_entry_off) = self.get_free_entry(superblock, io, entry_size)? {
-			let mut free_entry = self.read_dirent(superblock, io, free_entry_off)?;
-			let split = free_entry.total_size as usize - entry_size > 8;
-
-			if split {
-				// TODO Split entry
-			}
-
-			free_entry.inode = entry_inode;
-			free_entry.set_name(superblock, name);
-			free_entry.set_type(superblock, file_type);
-			self.write_dirent(superblock, io, &free_entry, free_entry_off)
-		} else {
-			let entry = DirectoryEntry::new(superblock, entry_inode, file_type, name)?;
-			self.write_dirent(superblock, io, &entry, self.get_size(superblock))
-		}
-	}
-
-	// TODO remove_dirent
-
-	// TODO get_link_path
-
-	/// Returns the device major and minor numbers associated with the device.
-	/// If the file is not a device file, the behaviour is undefined.
-	pub fn get_device(&self) -> (u32, u32) {
-		debug_assert!(self.get_type() == FileType::BlockDevice
-			|| self.get_type() == FileType::CharDevice);
-
-		(self.direct_block_ptrs[0], self.direct_block_ptrs[1])
-	}
-
-	/// Sets the device major and minor numbers associated with the device.
-	/// `major` is the major number.
-	/// `minor` is the minor number.
-	/// If the file is not a device file, the behaviour is undefined.
-	pub fn set_device(&mut self, major: u32, minor: u32) {
-		debug_assert!(self.get_type() == FileType::BlockDevice
-			|| self.get_type() == FileType::CharDevice);
-
-		self.direct_block_ptrs[0] = major;
-		self.direct_block_ptrs[1] = minor;
-	}
-
-	/// Writes the inode on the device.
-	pub fn write(&self, i: u32, superblock: &Superblock, io: &mut dyn DeviceHandle)
-		-> Result<(), Errno> {
-		let off = Self::get_disk_offset(i, superblock, io)?;
-		write(self, off, io)
-	}
-}
-
-/// A directory entry is a structure stored in the content of an inode of type Directory. Each
-/// directory entry represent a file that is the stored in the directory and points to its inode.
-#[repr(C, packed)]
-struct DirectoryEntry {
-	/// The inode associated with the entry.
-	inode: u32,
-	/// The total size of the entry.
-	total_size: u16,
-	/// Name length least-significant bits.
-	name_length_lo: u8,
-	/// Name length most-significant bits or type indicator (if enabled).
-	name_length_hi: u8,
-	/// The entry's name.
-	name: [u8],
-}
-
-impl DirectoryEntry {
-	/// Creates a new instance.
-	/// `superblock` is the filesystem's superblock.
-	/// `inode` is the entry's inode.
-	/// `file_type` is the entry's type.
-	/// `name` is the entry's name.
-	pub fn new(superblock: &Superblock, inode: u32, file_type: FileType, name: &String)
-		-> Result<Box<Self>, Errno> {
-		debug_assert!(inode >= 1);
-
-		let len = 8 + name.as_bytes().len();
-		let slice = unsafe {
-			slice::from_raw_parts_mut(malloc::alloc(len)? as *mut u8, len)
-		};
-
-		let mut entry = unsafe {
-			Box::from_raw(slice as *mut [u8] as *mut [()] as *mut Self)
-		};
-		entry.inode = inode;
-		entry.total_size = len as _;
-		entry.set_type(superblock, file_type);
-		entry.set_name(superblock, name);
-		Ok(entry)
-	}
-
-	/// Creates a new instance from a slice.
-	pub unsafe fn from(slice: &[u8]) -> Result<Box<Self>, Errno> {
-		let ptr = malloc::alloc(slice.len())? as *mut u8;
-		let alloc_slice = slice::from_raw_parts_mut(ptr, slice.len());
-		alloc_slice.copy_from_slice(&slice);
-
-		Ok(Box::from_raw(alloc_slice as *mut [u8] as *mut [()] as *mut Self))
-	}
-
-	/// Returns the length the entry's name.
-	/// `superblock` is the filesystem's superblock.
-	fn get_name_length(&self, superblock: &Superblock) -> usize {
-		if superblock.required_features & REQUIRED_FEATURE_DIRECTORY_TYPE == 0 {
-			((self.name_length_hi as usize) << 8) | (self.name_length_lo as usize)
-		} else {
-			self.name_length_lo as usize
-		}
-	}
-
-	/// Returns the entry's name.
-	/// `superblock` is the filesystem's superblock.
-	pub fn get_name(&self, superblock: &Superblock) -> &str {
-		let name_length = self.get_name_length(superblock);
-		unsafe {
-			util::ptr_to_str_len(&self.name[0], name_length)
-		}
-	}
-
-	/// Sets the name of the entry.
-	/// If the length of the entry is shorted than the required space, the name shall be truncated.
-	pub fn set_name(&mut self, superblock: &Superblock, name: &String) {
-		let slice = name.as_bytes();
-		let len = min(slice.len(), self.total_size as usize - 8);
-		self.name[..len].copy_from_slice(&slice[..len]);
-
-		self.name_length_lo = (len & 0xff) as u8;
-		if superblock.required_features & REQUIRED_FEATURE_DIRECTORY_TYPE == 0 {
-			self.name_length_hi = ((len >> 8) & 0xff) as u8;
-		}
-	}
-
-	/// Returns the file type associated with the entry (if the option is enabled).
-	pub fn get_type(&self, superblock: &Superblock) -> Option<FileType> {
-		if superblock.required_features & REQUIRED_FEATURE_DIRECTORY_TYPE == 0 {
-			match self.name_length_hi {
-				TYPE_INDICATOR_REGULAR => Some(FileType::Regular),
-				TYPE_INDICATOR_DIRECTORY => Some(FileType::Directory),
-				TYPE_INDICATOR_CHAR_DEVICE => Some(FileType::CharDevice),
-				TYPE_INDICATOR_BLOCK_DEVICE => Some(FileType::BlockDevice),
-				TYPE_INDICATOR_FIFO => Some(FileType::FIFO),
-				TYPE_INDICATOR_SOCKET => Some(FileType::Socket),
-				TYPE_INDICATOR_SYMLINK => Some(FileType::Link),
-
-				_ => None,
-			}
-		} else {
-			None
-		}
-	}
-
-	/// Sets the file type associated with the entry (if the option is enabled).
-	pub fn set_type(&mut self, superblock: &Superblock, file_type: FileType) {
-		if superblock.required_features & REQUIRED_FEATURE_DIRECTORY_TYPE != 0 {
-			self.name_length_hi = match file_type {
-				FileType::Regular => TYPE_INDICATOR_REGULAR,
-				FileType::Directory => TYPE_INDICATOR_DIRECTORY,
-				FileType::CharDevice => TYPE_INDICATOR_CHAR_DEVICE,
-				FileType::BlockDevice => TYPE_INDICATOR_BLOCK_DEVICE,
-				FileType::FIFO => TYPE_INDICATOR_FIFO,
-				FileType::Socket => TYPE_INDICATOR_SOCKET,
-				FileType::Link => TYPE_INDICATOR_SYMLINK,
-			};
-		}
-	}
-
-	/// Tells whether the entry is valid.
-	pub fn is_free(&self) -> bool {
-		self.inode == 0
 	}
 }
 
 /// Structure representing a instance of the ext2 filesystem.
 struct Ext2Fs {
+	/// The path at which the filesystem is mounted.
+	mountpath: Path,
+
 	/// The filesystem's superblock.
 	superblock: Superblock,
+
+	/// Tells whether the filesystem is mounted in read-only.
+	readonly: bool,
 }
 
 impl Ext2Fs {
 	/// Creates a new instance.
 	/// If the filesystem cannot be mounted, the function returns an Err.
-	fn new(mut superblock: Superblock, io: &mut dyn DeviceHandle) -> Result<Self, Errno> {
+	/// `mountpath` is the path on which the filesystem is mounted.
+	/// `readonly` tells whether the filesystem is mounted in read-only.
+	fn new(mut superblock: Superblock, io: &mut dyn IO, mountpath: Path, readonly: bool)
+		-> Result<Self, Errno> {
 		debug_assert!(superblock.is_valid());
 
-		// TODO Check that the driver supports required features
+		// Checking the filesystem doesn't require features that are not implemented by the driver
+		if superblock.major_version >= 1 {
+			// TODO Implement journal
+			let unsupported_required_features = REQUIRED_FEATURE_COMPRESSION
+				| REQUIRED_FEATURE_JOURNAL_REPLAY
+				| REQUIRED_FEATURE_JOURNAL_DEVIXE;
+
+			if superblock.required_features & unsupported_required_features != 0 {
+				// TODO Log?
+				return Err(errno::EINVAL);
+			}
+
+			// TODO Implement
+			let unsupported_write_features = WRITE_REQUIRED_DIRECTORY_BINARY_TREE;
+
+			if !readonly && superblock.write_required_features & unsupported_write_features != 0 {
+				// TODO Log?
+				return Err(errno::EROFS);
+			}
+		}
+
 		let timestamp = time::get();
 		if superblock.mount_count_since_fsck >= superblock.mount_count_before_fsck {
 			return Err(errno::EINVAL);
 		}
-		if timestamp >= superblock.last_fsck_timestamp + superblock.fsck_interval {
+		// TODO
+		/*if timestamp >= superblock.last_fsck_timestamp + superblock.fsck_interval {
 			return Err(errno::EINVAL);
-		}
+		}*/
 
 		superblock.mount_count_since_fsck += 1;
-		superblock.last_fsck_timestamp = timestamp;
+
+		// Setting the last mount path
+		{
+			let mountpath_str = mountpath.as_string()?;
+			let mountpath_bytes = mountpath_str.as_bytes();
+
+			let mut i = 0;
+			while i < min(mountpath_bytes.len(), superblock.last_mount_path.len()) {
+				superblock.last_mount_path[i] = mountpath_bytes[i];
+				i += 1;
+			}
+			while i < superblock.last_mount_path.len() {
+				superblock.last_mount_path[i] = 0;
+				i += 1;
+			}
+		}
+
+		// Setting the last mount timestamp
+		if let Some(timestamp) = timestamp {
+			superblock.last_mount_timestamp = timestamp;
+		}
+
 		superblock.write(io)?;
 
 		Ok(Self {
+			mountpath,
+
 			superblock,
+
+			readonly,
 		})
 	}
 }
 
+// TODO Update the write timestamp when the fs is written (take mount flags into account)
 impl Filesystem for Ext2Fs {
-	fn get_name(&self) -> &str {
-		"ext2"
+	fn get_name(&self) -> &[u8] {
+		b"ext2"
 	}
 
-	/// Tells whether the filesystem is mounted in read-only.
 	fn is_readonly(&self) -> bool {
-		// TODO Check that the driver supports write-required features
-		todo!();
+		self.readonly
 	}
 
-	fn get_inode(&mut self, io: &mut dyn DeviceHandle, path: Path) -> Result<INode, Errno> {
+	fn must_cache(&self) -> bool {
+		true
+	}
+
+	fn get_inode(&mut self, io: &mut dyn IO, path: Path) -> Result<INode, Errno> {
 		debug_assert!(path.is_absolute());
 
-		let mut inode_index = ROOT_DIRECTORY_INODE;
+		let mut inode_index = inode::ROOT_DIRECTORY_INODE;
 		for i in 0..path.get_elements_count() {
 			let inode = Ext2INode::read(inode_index, &self.superblock, io)?;
 			if inode.get_type() != FileType::Directory {
-				return Err(errno::ENOENT);
+				return Err(errno::ENOTDIR);
 			}
 
-			let name = path[i].as_str();
-			if let Some(entry) = inode.get_directory_entry(name, &self.superblock, io)? {
-				inode_index = entry.inode;
+			let name = &path[i];
+			if let Some(entry) = inode.get_directory_entry(name.as_bytes(), &self.superblock,
+				io)? {
+				inode_index = entry.get_inode();
 			} else {
 				return Err(errno::ENOENT);
 			}
@@ -1369,41 +622,94 @@ impl Filesystem for Ext2Fs {
 		Ok(inode_index)
 	}
 
-	fn load_file(&mut self, io: &mut dyn DeviceHandle, inode: INode, name: String)
-		-> Result<File, Errno> {
+	fn load_file(&mut self, io: &mut dyn IO, inode: INode, name: String) -> Result<File, Errno> {
 		let inode_ = Ext2INode::read(inode, &self.superblock, io)?;
 		let file_type = inode_.get_type();
 
-		let mut file = File::new(name, file_type, inode_.uid, inode_.gid,
+		let file_content = match file_type {
+			FileType::Regular => FileContent::Regular,
+			FileType::Directory => {
+				let mut subfiles = Vec::new();
+				let mut err = None;
+
+				inode_.foreach_directory_entry(| _, entry | {
+					match String::from(entry.get_name(&self.superblock)) {
+						Ok(s) => {
+							if let Err(e) = subfiles.push(s) {
+								err = Some(e);
+								false
+							} else {
+								true
+							}
+						},
+						Err(e) => {
+							err = Some(e);
+							false
+						},
+					}
+				}, &self.superblock, io)?;
+
+				if let Some(e) = err {
+					return Err(e);
+				}
+
+				FileContent::Directory(subfiles)
+			},
+			FileType::Link => {
+				// TODO Read symlink path
+				todo!();
+			},
+			FileType::Fifo => {
+				// TODO
+				todo!();
+			},
+			FileType::Socket => {
+				// TODO
+				todo!();
+			},
+			FileType::BlockDevice => {
+				let (major, minor) = inode_.get_device();
+
+				FileContent::BlockDevice {
+					major: major as _,
+					minor: minor as _,
+				}
+			},
+			FileType::CharDevice => {
+				let (major, minor) = inode_.get_device();
+
+				FileContent::CharDevice {
+					major: major as _,
+					minor: minor as _,
+				}
+			},
+		};
+
+		let mut file = File::new(name, file_content, inode_.uid, inode_.gid,
 			inode_.get_permissions())?;
-		file.set_inode(Some(inode));
+		file.set_location(Some(FileLocation::new(self.mountpath.failable_clone()?, inode)));
 		file.set_ctime(inode_.ctime);
 		file.set_mtime(inode_.mtime);
 		file.set_atime(inode_.atime);
-
-		match file_type {
-			FileType::Link => {
-				// TODO Read symlink path
-			},
-			FileType::BlockDevice | FileType::CharDevice => {
-				let (major, minor) = inode_.get_device();
-				file.set_device_major(major);
-				file.set_device_minor(minor);
-			},
-
-			_ => {},
-		}
+		file.set_size(inode_.get_size(&self.superblock));
 
 		Ok(file)
 	}
 
-	fn add_file(&mut self, io: &mut dyn DeviceHandle, parent_inode: INode, file: File)
-		-> Result<(), Errno> {
-		debug_assert!(parent_inode >= 1);
-		let mut parent = Ext2INode::read(parent_inode, &self.superblock, io)?;
-		debug_assert_eq!(parent.get_type(), FileType::Directory);
+	// TODO Check if the file exists. If it does, return EEXIST
+	fn add_file(&mut self, io: &mut dyn IO, parent_inode: INode, mut file: File)
+		-> Result<File, Errno> {
+		if self.readonly {
+			return Err(errno::EROFS);
+		}
 
-		let inode_index = self.superblock.get_free_inode(io)?;
+		let mut parent = Ext2INode::read(parent_inode, &self.superblock, io)?;
+
+		// Checking the parent file is a directory
+		if parent.get_type() != FileType::Directory {
+			return Err(errno::ENOTDIR);
+		}
+
 		let mut inode = Ext2INode {
 			mode: Ext2INode::get_file_mode(&file),
 			uid: file.get_uid(),
@@ -1417,7 +723,7 @@ impl Filesystem for Ext2Fs {
 			used_sectors: 0,
 			flags: 0,
 			os_specific_0: 0,
-			direct_block_ptrs: [0; DIRECT_BLOCKS_COUNT],
+			direct_block_ptrs: [0; inode::DIRECT_BLOCKS_COUNT as usize],
 			singly_indirect_block_ptr: 0,
 			doubly_indirect_block_ptr: 0,
 			triply_indirect_block_ptr: 0,
@@ -1427,53 +733,72 @@ impl Filesystem for Ext2Fs {
 			fragment_addr: 0,
 			os_specific_1: [0; 12],
 		};
-		match file.get_file_type() {
-			FileType::Link => {
-				// TODO Write symlink path
+		// TODO When adding a directory, add '.' and '..' in it?
+		match file.get_file_content() {
+			FileContent::Link(_target) => {
+				// TODO Write symlink target
+				todo!();
 			},
-			FileType::BlockDevice | FileType::CharDevice => {
-				inode.set_device(file.get_device_major(), file.get_device_minor());
+
+			FileContent::BlockDevice { major, minor }
+				| FileContent::CharDevice { major, minor } => {
+				if *major > (u8::MAX as u32) || *minor > (u8::MAX as u32) {
+					return Err(errno::ENODEV);
+				}
+
+				inode.set_device(*major as u8, *minor as u8);
 			},
 
 			_ => {},
 		}
+
+		let inode_index = self.superblock.get_free_inode(io)?;
 		inode.write(inode_index, &self.superblock, io)?;
+		let dir = file.get_file_type() == FileType::Directory;
+		self.superblock.mark_inode_used(io, inode_index, dir)?;
 
 		parent.add_dirent(&self.superblock, io, inode_index, file.get_name(),
 			file.get_file_type())?;
-		let dir = file.get_file_type() == FileType::Directory;
-		self.superblock.mark_inode_used(io, inode_index, dir)?;
-		parent.write(parent_inode, &self.superblock, io)
+		parent.write(parent_inode, &self.superblock, io)?;
+
+		file.set_location(Some(FileLocation::new(self.mountpath.failable_clone()?, inode_index)));
+		Ok(file)
 	}
 
-	fn remove_file(&mut self, io: &mut dyn DeviceHandle, parent_inode: INode, _name: &String)
+	fn remove_file(&mut self, io: &mut dyn IO, parent_inode: INode, _name: &String)
 		-> Result<(), Errno> {
+		if self.readonly {
+			return Err(errno::EROFS);
+		}
+
 		debug_assert!(parent_inode >= 1);
+
 		let parent = Ext2INode::read(parent_inode, &self.superblock, io)?;
 		debug_assert_eq!(parent.get_type(), FileType::Directory);
 
 		// TODO
 		todo!();
-
-		//Err(errno::ENOMEM)
 	}
 
-	fn read_node(&mut self, _io: &mut dyn DeviceHandle, inode: INode, _buf: &mut [u8])
-		-> Result<(), Errno> {
+	fn read_node(&mut self, io: &mut dyn IO, inode: INode, off: u64, buf: &mut [u8])
+		-> Result<usize, Errno> {
 		debug_assert!(inode >= 1);
-		// TODO
-		todo!();
 
-		//Err(errno::ENOMEM)
+		let inode_ = Ext2INode::read(inode, &self.superblock, io)?;
+		inode_.read_content(off, buf, &self.superblock, io)
 	}
 
-	fn write_node(&mut self, _io: &mut dyn DeviceHandle, inode: INode, _buf: &[u8])
+	fn write_node(&mut self, io: &mut dyn IO, inode: INode, off: u64, buf: &[u8])
 		-> Result<(), Errno> {
-		debug_assert!(inode >= 1);
-		// TODO
-		todo!();
+		if self.readonly {
+			return Err(errno::EROFS);
+		}
 
-		//Err(errno::ENOMEM)
+		debug_assert!(inode >= 1);
+
+		let mut inode_ = Ext2INode::read(inode, &self.superblock, io)?;
+		inode_.write_content(off, buf, &self.superblock, io)?;
+		inode_.write(inode, &self.superblock, io)
 	}
 }
 
@@ -1481,22 +806,17 @@ impl Filesystem for Ext2Fs {
 pub struct Ext2FsType {}
 
 impl FilesystemType for Ext2FsType {
-	fn get_name(&self) -> &str {
-		"ext2"
+	fn get_name(&self) -> &[u8] {
+		b"ext2"
 	}
 
-	// TODO Also check partition type
-	fn detect(&self, io: &mut dyn DeviceHandle) -> bool {
-		if let Ok(superblock) = Superblock::read(io) {
-			superblock.is_valid()
-		} else {
-			// TODO Return an error?
-			false
-		}
+	fn detect(&self, io: &mut dyn IO) -> Result<bool, Errno> {
+		Ok(Superblock::read(io)?.is_valid())
 	}
 
-	fn create_filesystem(&self, io: &mut dyn DeviceHandle) -> Result<Box<dyn Filesystem>, Errno> {
-		let timestamp = time::get();
+	fn create_filesystem(&self, io: &mut dyn IO) -> Result<Box<dyn Filesystem>, Errno> {
+		let timestamp = time::get().unwrap_or(0);
+
 		let blocks_count = (io.get_size() / DEFAULT_BLOCK_SIZE) as u32;
 		let groups_count = blocks_count / DEFAULT_BLOCKS_PER_GROUP;
 
@@ -1518,9 +838,9 @@ impl FilesystemType for Ext2FsType {
 			total_unallocated_inodes: inodes_count,
 			superblock_block_number: (SUPERBLOCK_OFFSET / DEFAULT_BLOCK_SIZE) as _,
 			block_size_log: (math::log2(DEFAULT_BLOCK_SIZE as usize) - 10) as _,
-			fragment_size_log: 0, // TODO
+			fragment_size_log: 0,
 			blocks_per_group: DEFAULT_BLOCKS_PER_GROUP,
-			fragments_per_group: 0, // TODO
+			fragments_per_group: 0,
 			inodes_per_group: DEFAULT_INODES_PER_GROUP,
 			last_mount_timestamp: timestamp,
 			last_write_timestamp: timestamp,
@@ -1561,15 +881,16 @@ impl FilesystemType for Ext2FsType {
 		superblock.write(io)?;
 
 		let blk_size = superblock.get_block_size() as u32;
+		let bgdt_offset = superblock.get_bgdt_offset();
 		let bgdt_size = math::ceil_division(groups_count
 			* size_of::<BlockGroupDescriptor>() as u32, blk_size);
-		let bgdt_end = BGDT_BLOCK_OFFSET + bgdt_size;
+		let bgdt_end = bgdt_offset + bgdt_size as u64;
 
 		for i in 0..groups_count {
-			let metadata_off = max(i * DEFAULT_BLOCKS_PER_GROUP, bgdt_end);
+			let metadata_off = max(i * DEFAULT_BLOCKS_PER_GROUP, bgdt_end as u32);
 			let metadata_size = block_usage_bitmap_size + inode_usage_bitmap_size
 				+ inodes_table_size;
-			debug_assert!(bgdt_end + metadata_size <= DEFAULT_BLOCKS_PER_GROUP);
+			debug_assert!(bgdt_end + metadata_size as u64 <= DEFAULT_BLOCKS_PER_GROUP as u64);
 
 			let block_usage_bitmap_addr = metadata_off;
 			let inode_usage_bitmap_addr = metadata_off + block_usage_bitmap_size;
@@ -1586,7 +907,7 @@ impl FilesystemType for Ext2FsType {
 
 				_padding: [0; 14],
 			};
-			bgd.write(i, io)?;
+			bgd.write(i, &superblock, io)?;
 		}
 
 		superblock.mark_block_used(io, 0)?;
@@ -1597,8 +918,8 @@ impl FilesystemType for Ext2FsType {
 		let bgdt_size = size_of::<BlockGroupDescriptor>() as u32 * groups_count;
 		let bgdt_blk_count = math::ceil_division(bgdt_size, blk_size);
 		for j in 0..bgdt_blk_count {
-			let blk = BGDT_BLOCK_OFFSET + j as u32;
-			superblock.mark_block_used(io, blk)?;
+			let blk = bgdt_offset + j as u64;
+			superblock.mark_block_used(io, blk as _)?;
 		}
 
 		for i in 0..groups_count {
@@ -1621,12 +942,12 @@ impl FilesystemType for Ext2FsType {
 		}
 
 		for i in 1..superblock.get_first_available_inode() {
-			let is_dir = i == ROOT_DIRECTORY_INODE;
+			let is_dir = i == inode::ROOT_DIRECTORY_INODE;
 			superblock.mark_inode_used(io, i, is_dir)?;
 		}
 
 		let root_dir = Ext2INode {
-			mode: INODE_TYPE_DIRECTORY | ROOT_DIRECTORY_DEFAULT_MODE,
+			mode: inode::INODE_TYPE_DIRECTORY | inode::ROOT_DIRECTORY_DEFAULT_MODE,
 			uid: 0,
 			size_low: 0,
 			ctime: timestamp,
@@ -1638,7 +959,7 @@ impl FilesystemType for Ext2FsType {
 			used_sectors: 0,
 			flags: 0,
 			os_specific_0: 0,
-			direct_block_ptrs: [0; DIRECT_BLOCKS_COUNT],
+			direct_block_ptrs: [0; inode::DIRECT_BLOCKS_COUNT as usize],
 			singly_indirect_block_ptr: 0,
 			doubly_indirect_block_ptr: 0,
 			triply_indirect_block_ptr: 0,
@@ -1648,15 +969,17 @@ impl FilesystemType for Ext2FsType {
 			fragment_addr: 0,
 			os_specific_1: [0; 12],
 		};
-		root_dir.write(ROOT_DIRECTORY_INODE, &superblock, io)?;
+		root_dir.write(inode::ROOT_DIRECTORY_INODE, &superblock, io)?;
 
-		let fs = Ext2Fs::new(superblock, io)?;
+		let fs = Ext2Fs::new(superblock, io, Path::root(), true)?;
 		Ok(Box::new(fs)?)
 	}
 
-	fn load_filesystem(&self, io: &mut dyn DeviceHandle) -> Result<Box<dyn Filesystem>, Errno> {
+	fn load_filesystem(&self, io: &mut dyn IO, mountpath: Path, readonly: bool)
+		-> Result<Box<dyn Filesystem>, Errno> {
 		let superblock = Superblock::read(io)?;
-		let fs = Ext2Fs::new(superblock, io)?;
+		let fs = Ext2Fs::new(superblock, io, mountpath, readonly)?;
+
 		Ok(Box::new(fs)? as _)
 	}
 }

@@ -5,8 +5,7 @@ use crate::idt;
 use crate::io;
 use crate::time::timer::Timer;
 use crate::util::boxed::Box;
-use crate::util::lock::mutex::Mutex;
-use crate::util::lock::mutex::TMutex;
+use crate::util::lock::Mutex;
 use crate::util::math::rational::Rational;
 
 /// PIT channel number 0.

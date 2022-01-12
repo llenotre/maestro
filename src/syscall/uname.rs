@@ -5,7 +5,7 @@ use core::ptr::copy_nonoverlapping;
 use crate::errno::Errno;
 use crate::errno;
 use crate::process::Process;
-use crate::util;
+use crate::process::Regs;
 
 /// The length of a field of the utsname structure.
 const UTSNAME_LENGTH: usize = 256;
@@ -24,7 +24,7 @@ struct Utsname {
 }
 
 /// The implementation of the `uname` syscall.
-pub fn uname(proc: &mut Process, regs: &util::Regs) -> Result<i32, Errno> {
+pub fn uname(regs: &Regs) -> Result<i32, Errno> {
 	let buf = regs.ebx as *mut Utsname;
 	let mut utsname = Utsname {
 		sysname: [0; UTSNAME_LENGTH],
@@ -34,13 +34,18 @@ pub fn uname(proc: &mut Process, regs: &util::Regs) -> Result<i32, Errno> {
 		machine: [0; UTSNAME_LENGTH],
 	};
 
-	utsname.sysname.clone_from_slice(&crate::KERNEL_NAME.as_bytes());
+	utsname.sysname.copy_from_slice(&crate::NAME.as_bytes());
 	// TODO nodename
-	utsname.release.clone_from_slice(&crate::KERNEL_VERSION.as_bytes());
-	// TODO version
-	// TODO machine
+	utsname.release.copy_from_slice(&crate::VERSION.as_bytes());
+	// TODO version (OS version)
+	utsname.machine.copy_from_slice(&"x86".as_bytes()); // TODO Adapt to current architecture
 
-	if proc.get_mem_space().can_access(buf as _, size_of::<Utsname>(), true, true) {
+	let mutex = Process::get_current().unwrap();
+	let mut guard = mutex.lock();
+	let proc = guard.get_mut();
+
+	let len = size_of::<Utsname>();
+	if proc.get_mem_space().unwrap().can_access(buf as _, len, true, true) {
 		unsafe {
 			copy_nonoverlapping(&utsname as *const Utsname, buf, 1);
 		}

@@ -14,16 +14,18 @@ use core::mem::size_of;
 use core::ops::Index;
 use core::ops::IndexMut;
 use core::ptr::drop_in_place;
+use core::ptr;
 use core::slice;
 use crate::errno::Errno;
 use crate::errno;
+use crate::memory::malloc::ptr::NonNull;
+use crate::memory;
 use crate::util::list::ListNode;
-use crate::util::lock::mutex::Mutex;
-use crate::util::lock::mutex::MutexGuard;
+use crate::util::lock::Mutex;
 use crate::util;
 
 /// The allocator's mutex.
-static mut MUTEX: Mutex<()> = Mutex::new(());
+static MUTEX: Mutex<()> = Mutex::new(());
 
 /// Initializes the memory allocator.
 pub fn init() {
@@ -33,7 +35,7 @@ pub fn init() {
 /// Allocates `n` bytes of kernel memory and returns a pointer to the beginning of the allocated
 /// chunk. If the allocation fails, the function shall return an error.
 pub unsafe fn alloc(n: usize) -> Result<*mut c_void, Errno> {
-	let _ = MutexGuard::new(&mut MUTEX);
+	let _ = MUTEX.lock();
 
 	if n == 0 {
 		return Err(errno::EINVAL);
@@ -50,17 +52,17 @@ pub unsafe fn alloc(n: usize) -> Result<*mut c_void, Errno> {
 
 	let ptr = chunk.get_ptr();
 	debug_assert!(util::is_aligned(ptr, chunk::ALIGNEMENT));
-	debug_assert_ne!(ptr, 0 as _);
+	debug_assert!(ptr as usize >= memory::PROCESS_END as usize);
 	util::bzero(ptr, n);
 	Ok(ptr)
 }
 
 /// Returns the size of the given memory allocation in bytes.
-/// The pointer `ptr` MUST point to the beginning of a valid, used chunk of memory.
-pub unsafe fn get_size(ptr: *mut c_void) -> usize {
-	let _ = MutexGuard::new(&mut MUTEX);
+/// The pointer `ptr` **must** point to the beginning of a valid, used chunk of memory.
+pub unsafe fn get_size(ptr: *const c_void) -> usize {
+	let _ = MUTEX.lock();
 
-	let chunk = Chunk::from_ptr(ptr);
+	let chunk = Chunk::from_ptr(ptr as *mut _);
 	#[cfg(config_debug_debug)]
 	chunk.check();
 	assert!(chunk.is_used());
@@ -72,7 +74,7 @@ pub unsafe fn get_size(ptr: *mut c_void) -> usize {
 /// `n` is the new size of the chunk of memory.
 /// If the reallocation fails, the chunk is left untouched and the function returns an error.
 pub unsafe fn realloc(ptr: *mut c_void, n: usize) -> Result<*mut c_void, Errno> {
-	let _ = MutexGuard::new(&mut MUTEX);
+	let _ = MUTEX.lock();
 
 	if n == 0 {
 		return Err(errno::EINVAL);
@@ -110,7 +112,7 @@ pub unsafe fn realloc(ptr: *mut c_void, n: usize) -> Result<*mut c_void, Errno> 
 /// Frees the memory at the pointer `ptr` previously allocated with `alloc`. Subsequent uses of the
 /// associated memory are undefined.
 pub unsafe fn free(ptr: *mut c_void) {
-	let _ = MutexGuard::new(&mut MUTEX);
+	let _ = MUTEX.lock();
 
 	let chunk = Chunk::from_ptr(ptr);
 	#[cfg(config_debug_debug)]
@@ -118,7 +120,7 @@ pub unsafe fn free(ptr: *mut c_void) {
 	assert!(chunk.is_used());
 
 	chunk.set_used(false);
-	util::write_ptr(&mut chunk.as_free_chunk().free_list, ListNode::new_single());
+	ptr::write_volatile(&mut chunk.as_free_chunk().free_list, ListNode::new_single());
 
 	let c = chunk.coalesce();
 	if c.list.is_single() {
@@ -129,9 +131,11 @@ pub unsafe fn free(ptr: *mut c_void) {
 }
 
 /// Structure representing a kernelside allocation.
+/// The structure holds one or more elements of the given type. Freeing the allocation doesn't call
+/// `drop` on its elements.
 pub struct Alloc<T> {
 	/// Slice representing the allocation.
-	slice: *mut [T],
+	slice: NonNull<[T]>,
 }
 
 impl<T> Alloc<T> {
@@ -139,10 +143,10 @@ impl<T> Alloc<T> {
 	/// allowing to access it. If the allocation fails, the function shall return an error.
 	/// The function is unsafe because zero memory might be an inconsistent state for the object T.
 	pub unsafe fn new_zero(size: usize) -> Result<Self, Errno> {
-		let slice = {
+		let slice = NonNull::new({
 			let ptr = alloc(size * size_of::<T>())?;
 			slice::from_raw_parts_mut::<T>(ptr as _, size)
-		};
+		}).unwrap();
 
 		Ok(Self {
 			slice,
@@ -152,14 +156,14 @@ impl<T> Alloc<T> {
 	/// Returns an immutable reference to the underlying slice.
 	pub fn get_slice(&self) -> &[T] {
 		unsafe {
-			&*self.slice
+			&*self.slice.as_ref()
 		}
 	}
 
 	/// Returns a mutable reference to the underlying slice.
 	pub fn get_slice_mut(&mut self) -> &mut [T] {
 		unsafe {
-			&mut *self.slice
+			self.slice.as_mut()
 		}
 	}
 
@@ -173,13 +177,18 @@ impl<T> Alloc<T> {
 		self.get_slice_mut().as_mut_ptr() as _
 	}
 
-	/// Changes the size of the memory allocation. `n` is the new size of the chunk of memory (in
-	/// number of elements).
+	/// Returns the size of the allocation in number of elements.
+	pub fn get_size(&self) -> usize {
+		self.slice.len()
+	}
+
+	/// Changes the size of the memory allocation. All new elements are initialized to zero.
+	/// `n` is the new size of the chunk of memory (in number of elements).
 	/// If the reallocation fails, the chunk is left untouched and the function returns an error.
 	/// The function is unsafe because zero memory might be an inconsistent state for the object T.
 	pub unsafe fn realloc_zero(&mut self, n: usize) -> Result<(), Errno> {
 		let ptr = realloc(self.as_ptr_mut() as _, n * size_of::<T>())?;
-		self.slice = slice::from_raw_parts_mut::<T>(ptr as _, n);
+		self.slice = NonNull::new(slice::from_raw_parts_mut::<T>(ptr as _, n)).unwrap();
 
 		Ok(())
 	}
@@ -203,7 +212,20 @@ impl<T: Default> Alloc<T> {
 		Ok(alloc)
 	}
 
-	// TODO Implement realloc?
+	/// Resizes the current allocation. If new elements are added, the function initializes them
+	/// with the default value.
+	/// `n` is the new size of the chunk of memory (in number of elements).
+	/// If elements are removed, the function `drop` is **not** called on them.
+	pub unsafe fn realloc_default(&mut self, n: usize) -> Result<(), Errno> {
+		let curr_size = self.get_size();
+		self.realloc_zero(n)?;
+
+		for i in curr_size..n {
+			self.get_slice_mut()[i] = T::default();
+		}
+
+		Ok(())
+	}
 }
 
 impl<T: Clone> Alloc<T> {
@@ -220,8 +242,6 @@ impl<T: Clone> Alloc<T> {
 
 		Ok(alloc)
 	}
-
-	// TODO Implement realloc?
 }
 
 impl<T> Index<usize> for Alloc<T> {
@@ -439,24 +459,4 @@ mod test {
 			free(ptr0);
 		}
 	}
-
-	// TODO More tests on realloc (test with several chunks at the same time)
-
-	// TODO remove?
-	#[test_case]
-	fn free0() {
-		unsafe {
-			let ptr0 = alloc(16).unwrap();
-			util::memset(ptr0, -1, 16);
-			free(ptr0);
-
-			let ptr1 = alloc(16).unwrap();
-			util::memset(ptr1, -1, 16);
-			free(ptr1);
-
-			//debug_assert_eq!(ptr0, ptr1);
-		}
-	}
-
-	// TODO More tests on free
 }

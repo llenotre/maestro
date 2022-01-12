@@ -1,6 +1,6 @@
 //! This module implements Direct Access Memory (DMA) features.
 //!
-//! DMA allows to access components of the system by reading or writting to the memory at specific
+//! DMA allows to access components of the system by reading or writing to the memory at specific
 //! locations.
 
 use core::ffi::c_void;
@@ -9,8 +9,7 @@ use crate::memory::vmem::VMem;
 use crate::memory::vmem;
 use crate::util::boxed::Box;
 use crate::util::container::vec::Vec;
-use crate::util::lock::mutex::Mutex;
-use crate::util::lock::mutex::TMutex;
+use crate::util::lock::Mutex;
 
 /// Structure representing a DMA zone.
 pub struct DMA {
@@ -37,7 +36,8 @@ impl DMA {
     /// Maps the DMA zone onto the given virtual memory context handler.
     /// The function doesn't flush the modifications. It's the caller's responsibility to do so.
     pub fn map(&self, vmem: &mut Box<dyn VMem>) -> Result<(), Errno> {
-        let dma_flags = vmem::x86::FLAG_CACHE_DISABLE | vmem::x86::FLAG_WRITE_THROUGH | vmem::x86::FLAG_WRITE;
+        let dma_flags = vmem::x86::FLAG_CACHE_DISABLE | vmem::x86::FLAG_WRITE_THROUGH
+			| vmem::x86::FLAG_WRITE;
         vmem.map_range(self.phys_begin, self.virt_ptr, self.size, dma_flags)
     }
 }

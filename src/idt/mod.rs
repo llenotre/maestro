@@ -6,18 +6,6 @@ use core::mem::MaybeUninit;
 use crate::cpu::pic;
 use crate::util;
 
-/// TODO Doc
-const ID_TYPE_GATE_TASK: u8 = 0b01010000;
-/// TODO Doc
-const ID_TYPE_GATE_INTERRUPT16: u8 = 0b01100000;
-/// TODO Doc
-const ID_TYPE_GATE_TRAP16: u8 = 0b01110000;
-/// TODO Doc
-const ID_TYPE_GATE_INTERRUPT32: u8 = 0b11100000;
-/// TODO Doc
-const ID_TYPE_GATE_TRAP32: u8 = 0b11110000;
-/// TODO Doc
-const ID_TYPE_S: u8 = 0b00001000;
 /// Makes the interrupt switch to ring 0.
 const ID_PRIVILEGE_RING_0: u8 = 0b00000000;
 /// Makes the interrupt switch to ring 1.
@@ -40,7 +28,7 @@ macro_rules! cli {
 	() => (
 		#[allow(unused_unsafe)]
 		unsafe {
-			asm!("cli")
+			core::arch::asm!("cli");
 		}
 	);
 }
@@ -51,7 +39,7 @@ macro_rules! sti {
 	() => (
 		#[allow(unused_unsafe)]
 		unsafe {
-			asm!("sti")
+			core::arch::asm!("sti");
 		}
 	);
 }
@@ -62,7 +50,7 @@ macro_rules! hlt {
 	() => (
 		#[allow(unused_unsafe)]
 		unsafe {
-			asm!("hlt")
+			core::arch::asm!("hlt");
 		}
 	);
 }
@@ -151,8 +139,7 @@ extern "C" {
 }
 
 /// The list of IDT entries.
-static mut ID: MaybeUninit::<[InterruptDescriptor; ENTRIES_COUNT]>
-	= MaybeUninit::uninit();
+static mut ID: MaybeUninit<[InterruptDescriptor; ENTRIES_COUNT]> = MaybeUninit::uninit();
 
 /// Creates an IDT entry.
 fn create_id(address: *const c_void, selector: u16, type_attr: u8) -> InterruptDescriptor {
@@ -262,15 +249,21 @@ pub fn is_interrupt_enabled() -> bool {
 }
 
 /// Executes the given function `f` with maskable interruptions disabled.
-/// If interruptions were enabled before calling this function, they are enabled back before
-/// returning.
+/// This function saves the state of the interrupt flag and restores it before returning.
 pub fn wrap_disable_interrupts<T, F: FnOnce() -> T>(f: F) -> T {
-	if is_interrupt_enabled() {
-		crate::cli!();
-		let result = f();
+	let int = is_interrupt_enabled();
+
+	// Here is assumed that no interruption will change eflags. Which could cause a race condition
+
+	crate::cli!();
+
+	let result = f();
+
+	if int {
 		crate::sti!();
-		result
 	} else {
-		f()
+		crate::cli!();
 	}
+
+	result
 }

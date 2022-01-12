@@ -7,8 +7,9 @@ mod ansi;
 
 use core::cmp::*;
 use core::mem::MaybeUninit;
+use crate::device::serial;
 use crate::memory::vmem;
-use crate::util::lock::mutex::*;
+use crate::util::lock::Mutex;
 use crate::util;
 use crate::vga;
 
@@ -24,6 +25,9 @@ const EMPTY_CHAR: vga::Char = (vga::DEFAULT_COLOR as vga::Char) << 8;
 
 /// The size of a tabulation in space-equivalent.
 const TAB_SIZE: usize = 4;
+
+/// The maximum number of characters in the input buffer of a TTY.
+const INPUT_MAX: usize = 4096;
 
 /// The frequency of the bell in Hz.
 const BELL_FREQUENCY: u32 = 2000;
@@ -58,34 +62,37 @@ pub struct TTY {
 
 	/// The content of the TTY's history
 	history: [vga::Char; HISTORY_SIZE],
+	/// Tells whether TTY updates are enabled or not
+	update: bool,
+
+	/// The buffer containing the input characters.
+	input_buffer: [u8; INPUT_MAX],
+	/// The current size of the input buffer.
+	input_size: usize,
+
+	/// Tells whether the canonical mode is enabled.
+	canonical_mode: bool,
 
 	/// The ANSI escape codes buffer.
 	ansi_buffer: ansi::ANSIBuffer,
-
-	/// The number of prompted characters
-	prompted_chars: usize,
-	/// Tells whether TTY updates are enabled or not
-	update: bool,
 }
 
 /// The array of every TTYs.
 static mut TTYS: MaybeUninit<[Mutex<TTY>; TTYS_COUNT]> = MaybeUninit::uninit();
 /// The current TTY's id.
-static mut CURRENT_TTY: Mutex<usize> = Mutex::new(0);
+static CURRENT_TTY: Mutex<usize> = Mutex::new(0);
 
 /// Returns a mutable reference to the TTY with identifier `tty`.
-pub fn get(tty: usize) -> &'static mut Mutex<TTY> {
+pub fn get(tty: usize) -> &'static Mutex<TTY> {
 	debug_assert!(tty < TTYS_COUNT);
 	unsafe {
-		&mut TTYS.assume_init_mut()[tty]
+		&TTYS.assume_init_mut()[tty]
 	}
 }
 
 /// Returns a reference to the current TTY.
-pub fn current() -> &'static mut Mutex<TTY> {
-	unsafe { // Safe because using Mutex
-		get(*CURRENT_TTY.lock().get())
-	}
+pub fn current() -> &'static Mutex<TTY> {
+	get(*CURRENT_TTY.lock().get())
 }
 
 /// Initializes every TTYs.
@@ -95,7 +102,7 @@ pub fn init() {
 	}
 
 	for i in 0..TTYS_COUNT {
-		let mut guard = MutexGuard::new(get(i));
+		let mut guard = get(i).lock();
 		let t = guard.get_mut();
 		t.init();
 	}
@@ -108,30 +115,29 @@ pub fn switch(tty: usize) {
 	if tty >= TTYS_COUNT {
 		return;
 	}
-	unsafe { // Safe because using Mutex
-		*CURRENT_TTY.lock().get_mut() = tty;
-	}
+	*CURRENT_TTY.lock().get_mut() = tty;
 
-	let mut guard = MutexGuard::new(get(tty));
+	let mut guard = get(tty).lock();
 	let t = guard.get_mut();
+	vga::move_cursor(t.cursor_x, t.cursor_y - t.screen_y);
 	vga::enable_cursor();
-	vga::move_cursor(t.cursor_x, t.cursor_y);
 	t.update();
 }
 
 impl TTY {
-	// TODO Clean
 	/// Creates a new TTY.
 	pub fn init(&mut self) {
 		self.id = 0;
 		self.cursor_x = 0;
 		self.cursor_y = 0;
 		self.screen_y = 0;
+
 		self.current_color = vga::DEFAULT_COLOR;
-		self.history = [0; HISTORY_SIZE];
-		self.ansi_buffer = ansi::ANSIBuffer::new();
-		self.prompted_chars = 0;
+
+		self.history = [(vga::DEFAULT_COLOR as vga::Char) << 8; HISTORY_SIZE];
 		self.update = true;
+
+		self.ansi_buffer = ansi::ANSIBuffer::new();
 	}
 
 	/// Returns the id of the TTY.
@@ -141,10 +147,8 @@ impl TTY {
 
 	/// Updates the TTY to the screen.
 	pub fn update(&mut self) {
-		let current_tty = unsafe { // Safe because using Mutex
-			*CURRENT_TTY.lock().get()
-		};
-		if self.id == current_tty && !self.update {
+		let current_tty = *CURRENT_TTY.lock().get();
+		if self.id != current_tty || !self.update {
 			return;
 		}
 
@@ -152,18 +156,13 @@ impl TTY {
 		unsafe {
 			vmem::write_lock_wrap(|| {
 				core::ptr::copy_nonoverlapping(buff as *const vga::Char,
-					vga::BUFFER_VIRT as *mut vga::Char,
+					vga::get_buffer_virt() as *mut vga::Char,
 					(vga::WIDTH as usize) * (vga::HEIGHT as usize));
 			});
 		}
 
 		let y = self.cursor_y - self.screen_y;
-		if (0..vga::HEIGHT).contains(&y) {
-			vga::move_cursor(self.cursor_x, y);
-			vga::enable_cursor();
-		} else {
-			vga::disable_cursor();
-		}
+		vga::move_cursor(self.cursor_x, y);
 	}
 
 	/// Reinitializes TTY's current attributes.
@@ -217,7 +216,7 @@ impl TTY {
 		self.cursor_y = 0;
 		self.screen_y = 0;
 		for i in 0..self.history.len() {
-			self.history[i] = 0;
+			self.history[i] = (vga::DEFAULT_COLOR as vga::Char) << 8;
 		}
 		self.update();
 	}
@@ -227,7 +226,7 @@ impl TTY {
 		if self.cursor_x < 0 {
 			let p = -self.cursor_x;
 			self.cursor_x = vga::WIDTH - (p % vga::WIDTH);
-			self.cursor_y += p / vga::WIDTH - 1;
+			self.cursor_y -= p / vga::WIDTH + 1;
 		}
 
 		if self.cursor_x >= vga::WIDTH {
@@ -259,7 +258,7 @@ impl TTY {
 				self.history[i] = self.history[diff + i];
 			}
 			for i in size..self.history.len() {
-				self.history[i] = 0;
+				self.history[i] = (vga::DEFAULT_COLOR as vga::Char) << 8;
 			}
 
 			self.screen_y = HISTORY_LINES - vga::HEIGHT;
@@ -293,14 +292,13 @@ impl TTY {
 	}
 
 	/// Writes the character `c` to the TTY.
-	pub fn putchar(&mut self, c: u8) {
+	fn putchar(&mut self, c: u8) {
 		match c {
 			0x07 => {
 				// TODO Make the bell ring
 			},
 			0x08 => {
 				// TODO Backspace
-				todo!();
 			},
 			b'\t' => {
 				self.cursor_forward(get_tab_size(self.cursor_x), 0);
@@ -310,7 +308,6 @@ impl TTY {
 			},
 			0x0c => {
 				// TODO Move printer to a top of page
-				todo!();
 			},
 			b'\r' => {
 				self.cursor_x = 0;
@@ -323,8 +320,6 @@ impl TTY {
 				self.cursor_forward(1, 0);
 			}
 		}
-
-		self.update();
 	}
 
 	/// Writes string `buffer` to TTY.
@@ -340,17 +335,63 @@ impl TTY {
 				self.putchar(c);
 				i += 1;
 			}
-
-			self.update();
 		}
+
+		// TODO Add a compilation and/or runtime option for this
+		if let Some(serial) = serial::get(serial::COM1) {
+			serial.lock().get_mut().write(buffer);
+		}
+
+		self.update();
+	}
+
+	/// Tells whether the canonical mode is enabled.
+	#[inline(always)]
+	pub fn is_canonical_mode(&self) -> bool {
+		self.canonical_mode
+	}
+
+	/// Takes the given string `buffer` as input.
+	pub fn input(&mut self, buffer: &[u8]) {
+		// The length to write to the input buffer
+		let len = min(self.input_size + buffer.len(), self.input_buffer.len());
+		// The slice containing the input
+		let input = &buffer[..len];
+
+		if self.is_canonical_mode() {
+			// Writing to the input buffer
+			self.input_buffer[self.input_size..].copy_from_slice(input);
+			self.input_size += len;
+
+			// Processing input
+			let mut i = self.input_size - len;
+			while i < self.input_size {
+				match self.input_buffer[i] {
+					b'\n' => {
+						// TODO Make `self.input_buffer[..i]` available to device file
+						// TODO Erase from input buffer
+					},
+
+					// TODO Handle other special characters
+
+					_ => i += 1,
+				}
+			}
+		} else {
+			// TODO Make available to device file
+		}
+
+		// Writing onto the TTY
+		self.write(input);
 	}
 
 	/// Erases `count` characters in TTY.
-	pub fn erase(&mut self, mut count: usize) {
-		count = max(count, self.prompted_chars);
-		if count == 0 {
+	pub fn erase(&mut self, count: usize) {
+		let count = min(count, self.input_buffer.len());
+		if count > self.input_size {
 			return;
 		}
+
 		self.cursor_backward(count, 0);
 
 		let begin = get_history_offset(self.cursor_x, self.cursor_y);
@@ -358,7 +399,7 @@ impl TTY {
 			self.history[i] = EMPTY_CHAR;
 		}
 		self.update();
-		self.prompted_chars -= count;
+		self.input_size -= count;
 	}
 
 	/// Handles keyboard erase input for keycode.

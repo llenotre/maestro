@@ -3,6 +3,8 @@
 use core::cmp::Ordering;
 use core::cmp::max;
 use core::cmp::min;
+use core::hash::Hash;
+use core::hash::Hasher;
 use core::ops::Index;
 use core::ops::IndexMut;
 use core::ops::Range;
@@ -15,7 +17,6 @@ use core::slice;
 use crate::errno::Errno;
 use crate::memory::malloc;
 use crate::util::FailableClone;
-use crate::util;
 
 /// A vector container is a dynamically-resizable array of elements.
 /// When resizing a vector, the elements can be moved, thus the callee should not rely on pointers
@@ -25,9 +26,7 @@ use crate::util;
 pub struct Vec<T> {
 	/// The number of elements present in the vector
 	len: usize,
-	/// The number of elements that can be stored in the vector with its current buffer
-	capacity: usize,
-	/// A pointer to the first element of the vector
+	/// The vector's data
 	data: Option<malloc::Alloc<T>>,
 }
 
@@ -36,69 +35,72 @@ impl<T> Vec<T> {
 	pub const fn new() -> Self {
 		Self {
 			len: 0,
-			capacity: 0,
 			data: None,
 		}
 	}
 
 	/// Reallocates the vector's data with the vector's capacity.
-	fn realloc(&mut self) -> Result<(), Errno> {
-		debug_assert!(self.capacity >= self.len);
+	/// `capacity` is the new capacity in number of elements.
+	fn realloc(&mut self, capacity: usize) -> Result<(), Errno> {
 		if let Some(data) = &mut self.data {
+			debug_assert!(data.get_size() >= self.len);
+
 			// Safe because the memory is rewritten when the object is placed into the vector
 			unsafe {
-				data.realloc_zero(self.capacity)?;
+				data.realloc_zero(capacity)?;
 			}
 		} else {
 			// Safe because the memory is rewritten when the object is placed into the vector
 			let data_ptr = unsafe {
-				malloc::Alloc::new_zero(self.capacity)?
+				malloc::Alloc::new_zero(capacity)?
 			};
+
 			self.data = Some(data_ptr);
 		};
-		debug_assert!(self.data.is_some());
+
 		Ok(())
 	}
 
-	/// Increases the capacity of at least `min` elements.
+	/// Increases the capacity of so that at least `min` more elements can fit.
 	fn increase_capacity(&mut self, min: usize) -> Result<(), Errno> {
-		if self.len + min < self.capacity {
+		if self.len + min == 0 || self.len + min < self.capacity() {
 			return Ok(());
 		}
 
-		if self.capacity == 0 {
-			self.capacity = 1;
-		}
-		self.capacity = max(self.capacity + self.capacity / 4, self.len + min);
-		self.realloc()
+		let curr_capacity = self.capacity();
+		let capacity = max(curr_capacity + (curr_capacity / 4), self.len + min);
+		self.realloc(capacity)
 	}
 
 	/// Creates a new emoty vector with the given capacity.
 	pub fn with_capacity(capacity: usize) -> Result<Self, Errno> {
-		if capacity > 0 {
-			let mut vec = Self::new();
-			vec.capacity = capacity;
-			vec.realloc()?;
-			Ok(vec)
-		} else {
-			Ok(Self::new())
-		}
+		let mut vec = Self::new();
+		vec.realloc(capacity)?;
+
+		Ok(vec)
 	}
 
 	/// Returns the number of elements inside of the vector.
+	#[inline(always)]
 	pub fn len(&self) -> usize {
 		self.len
 	}
 
 	/// Returns true if the vector contains no elements.
+	#[inline(always)]
 	pub fn is_empty(&self) -> bool {
 		self.len == 0
 	}
 
 	/// Returns the number of elements that can be stored inside of the vector without needing to
 	/// reallocate the memory.
+	#[inline(always)]
 	pub fn capacity(&self) -> usize {
-		self.capacity
+		if let Some(d) = &self.data {
+			d.get_size()
+		} else {
+			0
+		}
 	}
 
 	/// Returns a slice containing the data.
@@ -157,13 +159,17 @@ impl<T> Vec<T> {
 	/// Inserts an element at position index within the vector, shifting all elements after it to
 	/// the right.
 	pub fn insert(&mut self, index: usize, element: T) -> Result<(), Errno> {
+		if index > self.len() {
+			self.vector_panic(index);
+		}
+
 		self.increase_capacity(1)?;
-		debug_assert!(self.capacity > self.len);
+		debug_assert!(self.capacity() > self.len);
 
 		unsafe {
 			let ptr = self.data.as_mut().unwrap().as_ptr_mut();
 			ptr::copy(ptr.offset(index as _), ptr.offset((index + 1) as _), self.len - index);
-			util::write_ptr(&mut self.data.as_mut().unwrap()[index] as _, element);
+			ptr::write_volatile(&mut self.data.as_mut().unwrap()[index] as _, element);
 		}
 		self.len += 1;
 		Ok(())
@@ -172,8 +178,8 @@ impl<T> Vec<T> {
 	/// Removes and returns the element at position index within the vector, shifting all elements
 	/// after it to the left.
 	pub fn remove(&mut self, index: usize) -> T {
-		if self.is_empty() {
-			self.vector_panic(0);
+		if index >= self.len() {
+			self.vector_panic(index);
 		}
 
 		let data = self.data.as_mut().unwrap();
@@ -211,7 +217,7 @@ impl<T> Vec<T> {
 	/// Appends an element to the back of a collection.
 	pub fn push(&mut self, value: T) -> Result<(), Errno> {
 		self.increase_capacity(1)?;
-		debug_assert!(self.capacity > self.len);
+		debug_assert!(self.capacity() > self.len);
 
 		unsafe {
 			ptr::write(&mut self.data.as_mut().unwrap()[self.len] as _, value);
@@ -258,7 +264,6 @@ impl<T> Vec<T> {
 		}
 
 		self.len = 0;
-		self.capacity = 0;
 
 		if self.data.is_some() {
 			self.data = None;
@@ -266,7 +271,7 @@ impl<T> Vec<T> {
 	}
 }
 
-impl<T: Default> Vec::<T> {
+impl<T: Default> Vec<T> {
 	/// Resizes the vector to the given length `new_len`. If new elements have to be created, the
 	/// default value is used.
 	pub fn resize(&mut self, new_len: usize) -> Result<(), Errno> {
@@ -281,7 +286,7 @@ impl<T: Default> Vec::<T> {
 	}
 }
 
-impl<T: PartialEq> PartialEq for Vec::<T> {
+impl<T: PartialEq> PartialEq for Vec<T> {
 	fn eq(&self, other: &Vec::<T>) -> bool {
 		if self.len() != other.len() {
 			return false;
@@ -304,7 +309,7 @@ impl<T> FailableClone for Vec<T> where T: FailableClone {
 			if self.data.is_some() {
 				// Safe because initialization uses ManuallyDrop on invalid objects
 				let data_ptr = unsafe {
-					malloc::Alloc::new_zero(self.capacity)?
+					malloc::Alloc::new_zero(self.len)?
 				};
 				Some(data_ptr)
 			} else {
@@ -314,14 +319,13 @@ impl<T> FailableClone for Vec<T> where T: FailableClone {
 
 		let mut v = Self {
 			len: self.len,
-			capacity: self.capacity,
 			data,
 		};
 
 		for i in 0..self.len() {
 			// Safe because the pointer is guaranteed to be correct thanks to the Alloc structure
 			unsafe {
-				util::write_ptr(&mut v[i] as _, self[i].failable_clone()?);
+				ptr::write_volatile(&mut v[i] as _, self[i].failable_clone()?);
 			}
 		}
 
@@ -488,6 +492,14 @@ impl<'a, T> IntoIterator for &'a Vec<T> {
 
 	fn into_iter(self) -> Self::IntoIter {
 		VecIterator::new(&self)
+	}
+}
+
+impl<T: Hash> Hash for Vec<T> {
+	fn hash<H: Hasher>(&self, state: &mut H) {
+		for i in 0..self.len() {
+			self[i].hash(state);
+		}
 	}
 }
 

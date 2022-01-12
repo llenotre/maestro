@@ -2,28 +2,30 @@
 //! The root filesystem is passed to the kernel as an argument when booting. Other filesystems are
 //! mounted into subdirectories.
 
+pub mod fcache;
 pub mod file_descriptor;
 pub mod fs;
 pub mod mountpoint;
 pub mod path;
+pub mod pipe;
+pub mod socket;
 
-use core::mem::MaybeUninit;
+use core::cmp::max;
+use core::ffi::c_void;
 use crate::device::DeviceType;
 use crate::device;
 use crate::errno::Errno;
 use crate::errno;
+use crate::file::fcache::FCache;
 use crate::file::mountpoint::MountPoint;
+use crate::limits;
 use crate::time::Timestamp;
 use crate::time;
 use crate::util::FailableClone;
-use crate::util::container::hashmap::HashMap;
+use crate::util::IO;
 use crate::util::container::string::String;
 use crate::util::container::vec::Vec;
-use crate::util::lock::mutex::Mutex;
-use crate::util::lock::mutex::MutexGuard;
-use crate::util::lock::mutex::TMutex;
 use crate::util::ptr::SharedPtr;
-use crate::util::ptr::WeakPtr;
 use path::Path;
 
 /// Type representing a user ID.
@@ -31,9 +33,24 @@ pub type Uid = u16;
 /// Type representing a group ID.
 pub type Gid = u16;
 /// Type representing a file mode.
-pub type Mode = u16;
+pub type Mode = u32;
 /// Type representing an inode ID.
 pub type INode = u32;
+
+/// File type: socket
+pub const S_IFSOCK: Mode = 0o140000;
+/// File type: symbolic link
+pub const S_IFLNK: Mode = 0o120000;
+/// File type: regular file
+pub const S_IFREG: Mode = 0o100000;
+/// File type: block device
+pub const S_IFBLK: Mode = 0o060000;
+/// File type: directory
+pub const S_IFDIR: Mode = 0o040000;
+/// File type: character device
+pub const S_IFCHR: Mode = 0o020000;
+/// File type: FIFO
+pub const S_IFIFO: Mode = 0o010000;
 
 /// User: Read, Write and Execute.
 pub const S_IRWXU: Mode = 0o0700;
@@ -66,14 +83,6 @@ pub const S_ISGID: Mode = 0o2000;
 /// Sticky bit.
 pub const S_ISVTX: Mode = 0o1000;
 
-/// The number of buckets in the hash map storing a directory's subfiles.
-pub const SUBFILES_HASHMAP_BUCKETS: usize = 16;
-
-/// The size of the files pool.
-pub const FILES_POOL_SIZE: usize = 1024;
-/// The upper bount for the file accesses counter.
-pub const ACCESSES_UPPER_BOUND: usize = 128;
-
 /// Enumeration representing the different file types.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum FileType {
@@ -84,7 +93,7 @@ pub enum FileType {
 	/// A symbolic link, pointing to another file.
 	Link,
 	/// A named pipe.
-	FIFO,
+	Fifo,
 	/// A Unix domain socket.
 	Socket,
 	/// A Block device file.
@@ -93,19 +102,113 @@ pub enum FileType {
 	CharDevice,
 }
 
-// TODO Use a structure wrapping files for lazy allocations
+impl FileType {
+	/// Returns the type corresponding to the given mode `mode`.
+	/// If the type doesn't exist, the function returns None.
+	pub fn from_mode(mode: Mode) -> Option<Self> {
+		match mode & 0o770000 {
+			S_IFSOCK => Some(Self::Socket),
+			S_IFLNK => Some(Self::Link),
+			S_IFREG | 0 => Some(Self::Regular),
+			S_IFBLK => Some(Self::BlockDevice),
+			S_IFDIR => Some(Self::Directory),
+			S_IFCHR => Some(Self::CharDevice),
+			S_IFIFO => Some(Self::Fifo),
+
+			_ => None,
+		}
+	}
+}
+
+/// Structure representing the location of a file on a disk.
+pub struct FileLocation {
+	/// The path of the mountpoint.
+	mountpoint_path: Path, // TODO Replace by an allocated ID to save memory
+
+	/// The disk's inode.
+	inode: INode,
+}
+
+impl FileLocation {
+	/// Creates a new instance.
+	#[inline]
+	pub fn new(mountpoint_path: Path, inode: INode) -> Self {
+		Self {
+			mountpoint_path,
+
+			inode,
+		}
+	}
+
+	/// Returns the path of the mountpoint.
+	#[inline]
+	pub fn get_mountpoint_path(&self) -> &Path {
+		&self.mountpoint_path
+	}
+
+	/// Returns the mountpoint associated with the file's location.
+	pub fn get_mountpoint(&self) -> Option<SharedPtr<MountPoint>> {
+		mountpoint::from_path(&self.mountpoint_path)
+	}
+
+	/// Returns the inode number.
+	#[inline]
+	pub fn get_inode(&self) -> INode {
+		self.inode
+	}
+}
+
+/// Enumeration of all possible file contents for each file types.
+pub enum FileContent {
+	/// The file is a regular file. No data.
+	Regular,
+	/// The file is a directory. The data is the list of subfiles.
+	Directory(Vec<String>),
+	/// The file is a link. The data is the link's target.
+	Link(String),
+	/// The file is a FIFO. The data is a pipe ID.
+	Fifo(u32),
+	/// The file is a socket. The data is a socket ID.
+	Socket(u32),
+
+	/// The file is a block device.
+	BlockDevice {
+		major: u32,
+		minor: u32,
+	},
+
+	/// The file is a char device.
+	CharDevice {
+		major: u32,
+		minor: u32,
+	},
+}
+
+impl FileContent {
+	/// Returns the file type associated with the content type.
+	pub fn get_file_type(&self) -> FileType {
+		match self {
+			Self::Regular => FileType::Regular,
+			Self::Directory(_) => FileType::Directory,
+			Self::Link(_) => FileType::Link,
+			Self::Fifo(_) => FileType::Fifo,
+			Self::Socket(_) => FileType::Socket,
+			Self::BlockDevice { .. } => FileType::BlockDevice,
+			Self::CharDevice { .. } => FileType::CharDevice,
+		}
+	}
+}
+
 /// Structure representing a file.
 pub struct File {
 	/// The name of the file.
 	name: String,
 
-	/// Pointer to the parent file.
-	parent: Option<WeakPtr<File>>,
+	/// The path of the file's parent.
+	parent_path: Path,
 
 	/// The size of the file in bytes.
 	size: u64,
-	/// The type of the file.
-	file_type: FileType,
 
 	/// The ID of the owner user.
 	uid: Uid,
@@ -114,8 +217,8 @@ pub struct File {
 	/// The mode of the file.
 	mode: Mode,
 
-	/// The inode. None means that the file is not stored on any filesystem.
-	inode: Option::<INode>,
+	/// The location the file is stored on.
+	location: Option<FileLocation>,
 
 	/// Timestamp of the last modification of the metadata.
 	ctime: Timestamp,
@@ -124,64 +227,38 @@ pub struct File {
 	/// Timestamp of the last access to the file.
 	atime: Timestamp,
 
-	/// The file's subfiles (applicable only if the file is a directory).
-	subfiles: Option<HashMap<String, WeakPtr<File>>>,
-
-	/// The link's target (applicable only if the file is a symbolic link).
-	link_target: String,
-
-	// TODO Store file data:
-	// - FIFO: buffer (on ram only)
-	// - Socket: buffer (on ram only)
-
-	/// The device's major number (applicable only if the file is a block or char device)
-	device_major: u32,
-	/// The device's minor number (applicable only if the file is a block or char device)
-	device_minor: u32,
+	/// The content of the file.
+	content: FileContent,
 }
 
 impl File {
 	/// Creates a new instance.
 	/// `name` is the name of the file.
-	/// `file_type` is the type of the file.
+	/// `file_content` is the content of the file. This value also determines the file type.
 	/// `uid` is the id of the owner user.
 	/// `gid` is the id of the owner group.
 	/// `mode` is the permission of the file.
-	pub fn new(name: String, file_type: FileType, uid: Uid, gid: Gid, mode: Mode)
+	pub fn new(name: String, content: FileContent, uid: Uid, gid: Gid, mode: Mode)
 		-> Result<Self, Errno> {
-		let timestamp = time::get();
-
-		let subfiles_hash_map = {
-			if file_type == FileType::Directory {
-				Some(HashMap::<String, WeakPtr<File>>::new(SUBFILES_HASHMAP_BUCKETS)?)
-			} else {
-				None
-			}
-		};
+		let timestamp = time::get().unwrap_or(0);
 
 		Ok(Self {
 			name,
-			parent: None,
+			parent_path: Path::root(),
 
 			size: 0,
-			file_type,
 
 			uid,
 			gid,
 			mode,
 
-			inode: None,
+			location: None,
 
 			ctime: timestamp,
 			mtime: timestamp,
 			atime: timestamp,
 
-			subfiles: subfiles_hash_map,
-
-			link_target: String::new(),
-
-			device_major: 0,
-			device_minor: 0,
+			content,
 		})
 	}
 
@@ -190,39 +267,33 @@ impl File {
 		&self.name
 	}
 
-	/// Returns a reference to the parent file.
-	pub fn get_parent(&self) -> Option<&mut Mutex<File>> {
-		self.parent.as_ref()?.get_mut()
+	/// Returns the absolute path of the file's parent.
+	pub fn get_parent_path(&self) -> &Path {
+		&self.parent_path
 	}
 
 	/// Returns the absolute path of the file.
 	pub fn get_path(&self) -> Result<Path, Errno> {
-		let name = self.get_name().failable_clone()?;
+		let mut parent_path = self.parent_path.failable_clone()?;
+		parent_path.push(self.name.failable_clone()?)?;
 
-		if let Some(parent) = self.get_parent() {
-			let mut path = parent.lock().get().get_path()?;
-			path.push(name)?;
-			Ok(path)
-		} else {
-			let mut path = Path::root();
-			path.push(name)?;
-			Ok(path)
-		}
+		Ok(parent_path)
 	}
 
-	/// Sets the file's parent.
-	pub fn set_parent(&mut self, parent: Option<WeakPtr<File>>) {
-		self.parent = parent;
+	/// Sets the file's parent path.
+	/// If the path isn't absolute, the behaviour is undefined.
+	pub fn set_parent_path(&mut self, parent_path: Path) {
+		self.parent_path = parent_path;
 	}
 
-	/// Returns the size of the file in bytes.
-	pub fn get_size(&self) -> u64 {
-		self.size
+	/// Sets the file's size.
+	pub fn set_size(&mut self, size: u64) {
+		self.size = size;
 	}
 
 	/// Returns the type of the file.
 	pub fn get_file_type(&self) -> FileType {
-		self.file_type
+		self.content.get_file_type()
 	}
 
 	/// Returns the owner user ID.
@@ -242,10 +313,15 @@ impl File {
 
 	/// Tells if the file can be read from by the given UID and GID.
 	pub fn can_read(&self, uid: Uid, gid: Gid) -> bool {
-		if self.uid == uid && self.mode & S_IRUSR != 0 {
+		// If root, bypass checks
+		if uid == 0 || gid == 0 {
 			return true;
 		}
-		if self.gid == gid && self.mode & S_IRGRP != 0 {
+
+		if self.mode & S_IRUSR != 0 && self.uid == uid {
+			return true;
+		}
+		if self.mode & S_IRGRP != 0 && self.gid == gid {
 			return true;
 		}
 		self.mode & S_IROTH != 0
@@ -253,10 +329,15 @@ impl File {
 
 	/// Tells if the file can be written to by the given UID and GID.
 	pub fn can_write(&self, uid: Uid, gid: Gid) -> bool {
-		if self.uid == uid && self.mode & S_IWUSR != 0 {
+		// If root, bypass checks
+		if uid == 0 || gid == 0 {
 			return true;
 		}
-		if self.gid == gid && self.mode & S_IWGRP != 0 {
+
+		if self.mode & S_IWUSR != 0 && self.uid == uid {
+			return true;
+		}
+		if self.mode & S_IWGRP != 0 && self.gid == gid {
 			return true;
 		}
 		self.mode & S_IWOTH != 0
@@ -264,25 +345,28 @@ impl File {
 
 	/// Tells if the file can be executed by the given UID and GID.
 	pub fn can_execute(&self, uid: Uid, gid: Gid) -> bool {
-		if self.uid == uid && self.mode & S_IXUSR != 0 {
+		// If root, bypass checks
+		if uid == 0 || gid == 0 {
 			return true;
 		}
-		if self.gid == gid && self.mode & S_IXGRP != 0 {
+
+		if self.mode & S_IXUSR != 0 && self.uid == uid {
+			return true;
+		}
+		if self.mode & S_IXGRP != 0 && self.gid == gid {
 			return true;
 		}
 		self.mode & S_IXOTH != 0
 	}
 
-	/// Returns the index of the inode associated with the file. This value is dependent on the
-	/// filesystem.
-	/// If no INode is associated with the file, the function returns None.
-	pub fn get_inode(&self) -> Option<INode> {
-		self.inode
+	/// Returns the location on which the file is stored.
+	pub fn get_location(&self) -> &Option<FileLocation> {
+		&self.location
 	}
 
-	/// Sets the file's inode.
-	pub fn set_inode(&mut self, inode: Option<INode>) {
-		self.inode = inode;
+	/// Sets the location on which the file is stored.
+	pub fn set_location(&mut self, location: Option<FileLocation>) {
+		self.location = location;
 	}
 
 	/// Returns the timestamp of the last modification of the file's metadata.
@@ -315,177 +399,191 @@ impl File {
 		self.atime = atime;
 	}
 
-	/// Tells whether the directory is empty or not. If the file is not a directory, the behaviour
-	/// is undefined.
-	pub fn is_empty_directory(&self) -> bool {
-		debug_assert_eq!(self.file_type, FileType::Directory);
-		self.subfiles.as_ref().unwrap().is_empty()
-	}
-
-	/// Adds the file `file` to the current file's subfiles. If the file isn't a directory, the
+	/// Tells whether the directory is empty or not. If the current file is not a directory, the
 	/// behaviour is undefined.
-	pub fn add_subfile(&mut self, file: WeakPtr<File>) -> Result<(), Errno> {
-		debug_assert_eq!(self.file_type, FileType::Directory);
-		let name = file.get_mut().unwrap().lock().get().get_name().failable_clone()?;
-		self.subfiles.as_mut().unwrap().insert(name, file)?;
-		Ok(())
-	}
-
-	/// Removes the file with name `name` from the current file's subfiles. If the file isn't a
-	/// directory, the behaviour is undefined.
-	pub fn remove_subfile(&mut self, name: String) {
-		debug_assert_eq!(self.file_type, FileType::Directory);
-		self.subfiles.as_mut().unwrap().remove(name);
-	}
-
-	/// Returns the symbolic link's target. If the file isn't a symbolic link, the behaviour is
-	/// undefined.
-	pub fn get_link_target(&self) -> &String {
-		debug_assert_eq!(self.file_type, FileType::Link);
-		&self.link_target
-	}
-
-	/// Sets the symbolic link's target. If the file isn't a symbolic link, the behaviour is
-	/// undefined.
-	pub fn set_link_target(&mut self, target: String) {
-		debug_assert_eq!(self.file_type, FileType::Link);
-		self.link_target = target;
-	}
-
-	/// Returns the device's major number. If the file isn't a block or char device, the behaviour
-	/// is undefined.
-	pub fn get_device_major(&self) -> u32 {
-		debug_assert!(self.file_type == FileType::BlockDevice
-			|| self.file_type == FileType::CharDevice);
-		self.device_major
-	}
-
-	/// Sets the device's major number. If the file isn't a block or char device, the behaviour
-	/// is undefined.
-	pub fn set_device_major(&mut self, major: u32) {
-		debug_assert!(self.file_type == FileType::BlockDevice
-			|| self.file_type == FileType::CharDevice);
-		self.device_major = major;
-	}
-
-	/// Returns the device's minor number. If the file isn't a block or char device, the behaviour
-	/// is undefined.
-	pub fn get_device_minor(&self) -> u32 {
-		debug_assert!(self.file_type == FileType::BlockDevice
-			|| self.file_type == FileType::CharDevice);
-		self.device_minor
-	}
-
-	/// Sets the device's minor number. If the file isn't a block or char device, the behaviour
-	/// is undefined.
-	pub fn set_device_minor(&mut self, minor: u32) {
-		debug_assert!(self.file_type == FileType::BlockDevice
-			|| self.file_type == FileType::CharDevice);
-		self.device_minor = minor;
-	}
-
-	/// Reads from the current file at offset `off` and places the data into the buffer `buff`.
-	/// The function returns the number of characters read.
-	pub fn read(&self, off: usize, buff: &mut [u8]) -> Result<usize, Errno> {
-		match self.file_type {
-			FileType::Regular => {
-				// TODO
-				todo!();
-			},
-
-			FileType::Directory => {
-				// TODO
-				todo!();
-			},
-
-			FileType::Link => {
-				// TODO
-				todo!();
-			},
-
-			FileType::FIFO => {
-				// TODO
-				todo!();
-			},
-
-			FileType::Socket => {
-				// TODO
-				todo!();
-			},
-
-			FileType::BlockDevice => {
-				let mut dev = device::get_device(DeviceType::Block, self.device_major,
-					self.device_minor).ok_or(errno::ENODEV)?;
-				let mut guard = dev.lock();
-				guard.get_mut().get_handle().read(off as _, buff)
-			},
-
-			FileType::CharDevice => {
-				let mut dev = device::get_device(DeviceType::Char, self.device_major,
-					self.device_minor).ok_or(errno::ENODEV)?;
-				let mut guard = dev.lock();
-				guard.get_mut().get_handle().read(off as _, buff)
-			},
+	pub fn is_empty_directory(&self) -> bool {
+		if let FileContent::Directory(subfiles) = &self.content {
+			subfiles.is_empty()
+		} else {
+			panic!("Not a directory!");
 		}
 	}
 
-	/// Writes to the current file at offset `off`, reading the data from the buffer `buff`.
-	/// The function returns the number of characters written.
-	pub fn write(&self, off: usize, buff: &[u8]) -> Result<usize, Errno> {
-		match self.file_type {
-			FileType::Regular => {
-				// TODO
-				todo!();
-			},
+	/// Adds the file with name `name` to the current file's subfiles. If the current file isn't a
+	/// directory, the behaviour is undefined.
+	pub fn add_subfile(&mut self, name: String) -> Result<(), Errno> {
+		if let FileContent::Directory(subfiles) = &mut self.content {
+			subfiles.push(name)
+		} else {
+			panic!("Not a directory!");
+		}
+	}
 
-			FileType::Directory => {
-				// TODO
-				todo!();
-			},
+	/// Removes the file with name `name` from the current file's subfiles. If the current file
+	/// isn't a directory, the behaviour is undefined.
+	pub fn remove_subfile(&mut self, _name: String) {
+		if let FileContent::Directory(_subfiles) = &mut self.content {
+			// TODO
+			todo!();
+			// subfiles.remove(name);
+		} else {
+			panic!("Not a directory!");
+		}
+	}
 
-			FileType::Link => {
-				// TODO
-				todo!();
-			},
+	/// Returns the file's content.
+	pub fn get_file_content(&self) -> &FileContent {
+		&self.content
+	}
 
-			FileType::FIFO => {
-				// TODO
-				todo!();
-			},
+	/// Sets the file's content, changing the file's type accordingly.
+	pub fn set_file_content(&mut self, content: FileContent) {
+		self.content = content;
+	}
 
-			FileType::Socket => {
-				// TODO
-				todo!();
-			},
-
-			FileType::BlockDevice => {
-				let mut dev = device::get_device(DeviceType::Block, self.device_major,
-					self.device_minor).ok_or(errno::ENODEV)?;
-				let mut guard = dev.lock();
-				guard.get_mut().get_handle().write(off as _, buff)
-			},
-
-			FileType::CharDevice => {
-				let mut dev = device::get_device(DeviceType::Char, self.device_major,
-					self.device_minor).ok_or(errno::ENODEV)?;
-				let mut guard = dev.lock();
-				guard.get_mut().get_handle().write(off as _, buff)
-			},
+	/// Performs an ioctl operation on the file.
+	pub fn ioctl(&mut self, request: u32, argp: *const c_void) -> Result<u32, Errno> {
+		if let FileContent::CharDevice {
+			major,
+			minor,
+		} = self.content {
+			let dev = device::get_device(DeviceType::Char, major, minor).ok_or(errno::ENODEV)?;
+			let mut guard = dev.lock();
+			guard.get_mut().get_handle().ioctl(request, argp)
+		} else {
+			Err(errno::ENOTTY)
 		}
 	}
 
 	/// Synchronizes the file with the device.
 	pub fn sync(&self) {
-		if self.inode.is_some() {
-			// TODO
-			todo!();
-		}
+		// TODO
 	}
 
 	/// Unlinks the current file.
 	pub fn unlink(&mut self) {
 		// TODO
-		todo!();
+	}
+}
+
+impl IO for File {
+	fn get_size(&self) -> u64 {
+		self.size
+	}
+
+	fn read(&self, off: u64, buff: &mut [u8]) -> Result<usize, Errno> {
+		match &self.content {
+			FileContent::Regular => {
+				let location = self.location.as_ref().ok_or(errno::EIO)?;
+
+				let mountpoint_mutex = location.get_mountpoint().ok_or(errno::EIO)?;
+				let mut mountpoint_guard = mountpoint_mutex.lock();
+				let mountpoint = mountpoint_guard.get_mut();
+
+				let io_mutex = mountpoint.get_source().get_io().clone();
+				let mut io_guard = io_mutex.lock();
+				let io = io_guard.get_mut();
+
+				let filesystem = mountpoint.get_filesystem();
+				filesystem.read_node(io, location.get_inode(), off, buff)
+			},
+
+			FileContent::Directory(_subdirs) => {
+				// TODO
+				todo!();
+			},
+
+			FileContent::Link(_target) => {
+				// TODO
+				todo!();
+			},
+
+			FileContent::Fifo(_pipe) => {
+				// TODO
+				todo!();
+			},
+
+			FileContent::Socket(_socket) => {
+				// TODO
+				todo!();
+			},
+
+			FileContent::BlockDevice { .. } | FileContent::CharDevice { .. } => {
+				let dev = match self.content {
+					FileContent::BlockDevice { major, minor } => {
+						device::get_device(DeviceType::Block, major, minor)
+					},
+
+					FileContent::CharDevice { major, minor } => {
+						device::get_device(DeviceType::Char, major, minor)
+					},
+
+					_ => unreachable!(),
+				}.ok_or(errno::ENODEV)?;
+
+				let mut guard = dev.lock();
+				guard.get_mut().get_handle().read(off as _, buff)
+			},
+		}
+	}
+
+	fn write(&mut self, off: u64, buff: &[u8]) -> Result<usize, Errno> {
+		match &self.content {
+			FileContent::Regular => {
+				let location = self.location.as_ref().ok_or(errno::EIO)?;
+
+				let mountpoint_mutex = location.get_mountpoint().ok_or(errno::EIO)?;
+				let mut mountpoint_guard = mountpoint_mutex.lock();
+				let mountpoint = mountpoint_guard.get_mut();
+
+				let io_mutex = mountpoint.get_source().get_io();
+				let mut io_guard = io_mutex.lock();
+				let io = io_guard.get_mut();
+
+				let filesystem = mountpoint.get_filesystem();
+				filesystem.write_node(io, location.get_inode(), off, buff)?;
+
+				self.size = max(off + buff.len() as u64, self.size);
+				Ok(buff.len())
+			},
+
+			FileContent::Directory(_subdirs) => {
+				// TODO
+				todo!();
+			},
+
+			FileContent::Link(_target) => {
+				// TODO
+				todo!();
+			},
+
+			FileContent::Fifo(_pipe) => {
+				// TODO
+				todo!();
+			},
+
+			FileContent::Socket(_socket) => {
+				// TODO
+				todo!();
+			},
+
+			FileContent::BlockDevice { .. } | FileContent::CharDevice { .. } => {
+				let dev = match self.content {
+					FileContent::BlockDevice { major, minor } => {
+						device::get_device(DeviceType::Block, major, minor)
+					},
+
+					FileContent::CharDevice { major, minor } => {
+						device::get_device(DeviceType::Char, major, minor)
+					},
+
+					_ => unreachable!(),
+				}.ok_or(errno::ENODEV)?;
+
+				let mut guard = dev.lock();
+				guard.get_mut().get_handle().write(off as _, buff)
+			},
+		}
 	}
 }
 
@@ -495,149 +593,62 @@ impl Drop for File {
 	}
 }
 
-/// The access counter allows to count the relative number of accesses count on a file.
-pub struct AccessCounter {
-	/// The number of accesses to the file relative to the previous file in the pool.
-	/// This number is limited by `ACCESSES_UPPER_BOUND`.
-	accesses_count: usize,
-}
+/// Resolves symbolic links and returns the final path. If too many links are to be resolved, the
+/// function returns an error.
+/// `file` is the starting file. If not a link, the function returns the path to this file.
+/// If the file pointed by the link(s) doesn't exist, the function returns the path where the file
+/// should be located.
+pub fn resolve_links(file: SharedPtr<File>) -> Result<Path, Errno> {
+	let mut resolve_count = 0;
+	let mut file = file;
 
-/// Cache storing files in memory. This cache allows to speedup accesses to the disk. It is
-/// synchronized with the disk when necessary.
-pub struct FCache {
-	/// A pointer to the root mount point.
-	root_mount: SharedPtr<MountPoint>,
+	// Resolve links until the current file is not a link
+	while resolve_count <= limits::SYMLOOP_MAX {
+		let file_guard = file.lock();
+		let f = file_guard.get();
 
-	/// A fixed-size pool storing files, sorted by path.
-	files_pool: Vec<File>,
-	/// A pool of the same size as the files pool, storing approximate relative accesses count for
-	/// each files.
-	/// The element at an index is associated to the element in the files pool at the same index.
-	accesses_pool: Vec<AccessCounter>,
-}
+		// Get the path of the parent directory of the current file
+		let parent_path = f.get_parent_path();
 
-impl FCache {
-	/// Creates a new instance with the given major and minor for the root device.
-	pub fn new(root_device_type: DeviceType, root_major: u32, root_minor: u32)
-		-> Result<Self, Errno> {
-		let root_mount = MountPoint::new(root_device_type, root_major, root_minor, 0, Path::root())?;
-		let shared_ptr = mountpoint::register_mountpoint(root_mount)?;
+		// If the file is a link, resolve it. Else, break the loop
+		if let FileContent::Link(link_target) = f.get_file_content() {
+			// Resolving the link
+			let link_path = Path::from_str(link_target.as_bytes(), false)?;
+			let mut path = (parent_path.failable_clone()? + link_path)?;
+			path.reduce()?;
+			drop(file_guard);
 
-		Ok(Self {
-			root_mount: shared_ptr,
+			// Getting the file from path
+			let mutex = fcache::get();
+			let mut guard = mutex.lock();
+			let files_cache = guard.get_mut().as_mut().unwrap();
 
-			files_pool: Vec::<File>::with_capacity(FILES_POOL_SIZE)?,
-			accesses_pool: Vec::<AccessCounter>::with_capacity(FILES_POOL_SIZE)?,
-		})
-	}
-
-	/// Loads the file with the given path `path`. If the file is already loaded, the behaviour is
-	/// undefined.
-	fn load_file(&mut self, _path: &Path) {
-		let len = self.files_pool.len();
-		if len >= FILES_POOL_SIZE {
-			self.files_pool.pop();
-			self.accesses_pool.pop();
+			match files_cache.get_file_from_path(&path) {
+				Ok(next_file) => file = next_file,
+				Err(e) => return {
+					if e == errno::ENOENT {
+						Ok(path)
+					} else {
+						Err(e)
+					}
+				},
+			}
+		} else {
+			break;
 		}
 
-		// TODO Push file
+		resolve_count += 1;
 	}
 
-	// TODO Use the cache
-	/// Adds the file `file` to the VFS. The file will be located into the directory at path
-	/// `path`.
-	/// The directory must exist. If an error happens, the function returns an Err with the
-	/// appropriate Errno.
-	/// If the path is relative, the function starts from the root.
-	/// If the file isn't present in the pool, the function shall load it.
-	pub fn create_file(&mut self, path: &Path, file: File) -> Result<(), Errno> {
-		let mut path = Path::root().concat(path)?;
-		path.reduce()?;
+	if resolve_count <= limits::SYMLOOP_MAX {
+		let file_guard = file.lock();
+		let f = file_guard.get();
 
-		let mut ptr = mountpoint::get_deepest(&path).ok_or(errno::ENOENT)?;
-		let mut guard = ptr.lock();
-		let deepest_mountpoint = guard.get_mut();
-
-		let mut dev_ptr = deepest_mountpoint.get_device();
-		let mut dev_guard = dev_ptr.lock();
-		let dev = dev_guard.get_mut();
-
-		let inner_path = path.range_from(deepest_mountpoint.get_path().get_elements_count()..)?;
-		let parent_inode = deepest_mountpoint.get_filesystem().get_inode(dev.get_handle(),
-			inner_path)?;
-
-		deepest_mountpoint.get_filesystem().add_file(dev.get_handle(), parent_inode, file)?;
-		Ok(())
-	}
-
-	// TODO Use the cache
-	/// Removes the file at path `path` from the VFS.
-	/// If the file is a non-empty directory, the function returns an error.
-	pub fn remove_file(&mut self, path: &Path) -> Result<(), Errno> {
-		let mut path = Path::root().concat(path)?;
-		path.reduce()?;
-
-		let mut ptr = mountpoint::get_deepest(&path).ok_or(errno::ENOENT)?;
-		let mut guard = ptr.lock();
-		let deepest_mountpoint = guard.get_mut();
-
-		let mut dev_ptr = deepest_mountpoint.get_device();
-		let mut dev_guard = dev_ptr.lock();
-		let dev = dev_guard.get_mut();
-
-		let path_len = path.get_elements_count();
-		if path_len > 0 {
-			let entry_name = &path[path_len - 1];
-			let mountpoint_path_len = deepest_mountpoint.get_path().get_elements_count();
-			let parent_inner_path = path.range(mountpoint_path_len..(path_len - 1))?;
-
-			let parent_inode = deepest_mountpoint.get_filesystem().get_inode(dev.get_handle(),
-				parent_inner_path)?;
-			deepest_mountpoint.get_filesystem().remove_file(dev.get_handle(), parent_inode,
-				entry_name)?;
-		}
-		Ok(())
-	}
-
-	// TODO Use the cache
-	/// Returns a reference to the file at path `path`. If the file doesn't exist, the function
-	/// returns None.
-	/// If the path is relative, the function starts from the root.
-	/// If the file isn't present in the pool, the function shall load it.
-	pub fn get_file_from_path(&mut self, path: &Path) -> Result<SharedPtr<File>, Errno> {
-		let mut path = Path::root().concat(path)?;
-		path.reduce()?;
-
-		let mut ptr = mountpoint::get_deepest(&path).ok_or(errno::ENOENT)?;
-		let mut guard = ptr.lock();
-		let deepest_mountpoint = guard.get_mut();
-
-		let mut dev_ptr = deepest_mountpoint.get_device();
-		let mut guard = dev_ptr.lock();
-		let dev = guard.get_mut();
-
-		let inner_path = path.range_from(deepest_mountpoint.get_path().get_elements_count()..)?;
-
-        let file = {
-            if inner_path.get_elements_count() > 0 {
-                let entry_name = inner_path[inner_path.get_elements_count() - 1].failable_clone()?;
-                let inode = deepest_mountpoint.get_filesystem().get_inode(dev.get_handle(),
-                    inner_path)?;
-
-                deepest_mountpoint.get_filesystem().load_file(dev.get_handle(), inode, entry_name)
-            } else {
-                let inode = deepest_mountpoint.get_filesystem().get_inode(dev.get_handle(),
-                    Path::root())?;
-                deepest_mountpoint.get_filesystem().load_file(dev.get_handle(), inode,
-                    String::from("")?)
-            }
-        }?;
-        SharedPtr::new(Mutex::new(file))
+		f.get_path()
+	} else {
+		Err(errno::ELOOP)
 	}
 }
-
-/// The instance of the file cache.
-static mut FILES_CACHE: MaybeUninit<Mutex<FCache>> = MaybeUninit::uninit();
 
 /// Initializes files management.
 /// `root_device_type` is the type of the root device file. If not a device, the behaviour is
@@ -647,52 +658,14 @@ static mut FILES_CACHE: MaybeUninit<Mutex<FCache>> = MaybeUninit::uninit();
 pub fn init(root_device_type: DeviceType, root_major: u32, root_minor: u32) -> Result<(), Errno> {
 	fs::register_defaults()?;
 
-	let cache = FCache::new(root_device_type, root_major, root_minor)?;
-	unsafe { // Safe because using Mutex and because this code is executed only once at boot
-		FILES_CACHE = MaybeUninit::new(Mutex::new(cache));
-	}
+	// The root device
+	let root_dev = device::get_device(root_device_type, root_major, root_minor)
+		.ok_or(errno::ENODEV)?;
+
+	// Creating the files cache
+	let cache = FCache::new(root_dev)?;
+	let mut guard = fcache::get().lock();
+	*guard.get_mut() = Some(cache);
 
 	Ok(())
-}
-
-/// Returns a mutable reference to the file cache.
-pub fn get_files_cache() -> &'static mut Mutex<FCache> {
-	unsafe { // Safe because using Mutex
-		FILES_CACHE.assume_init_mut()
-	}
-}
-
-/// Creates the directories necessary to reach path `path`. On success, the function returns
-/// the number of created directories (without the directories that already existed).
-/// If relative, the path is taken from the root.
-pub fn create_dirs(path: &Path) -> Result<usize, Errno> {
-	let mut guard = MutexGuard::new(get_files_cache());
-	let fcache = guard.get_mut();
-
-	let mut path = Path::root().concat(path)?;
-	path.reduce()?;
-	let mut p = Path::root();
-
-	let mut created_count = 0;
-	for i in 0..path.get_elements_count() {
-		p.push(path[i].failable_clone()?)?;
-
-		if fcache.get_file_from_path(&p).is_err() {
-			let dir = File::new(p[i].failable_clone()?, FileType::Directory, 0, 0, 0o755)?;
-			fcache.create_file(&p.range_to(..i)?, dir)?;
-
-			created_count += 1;
-		}
-	}
-
-	Ok(created_count)
-}
-
-/// Removes the file at path `path` and its subfiles recursively if it's a directory.
-/// If relative, the path is taken from the root.
-pub fn remove_recursive(path: &Path) -> Result<(), Errno> {
-	let mut path = Path::root().concat(path)?;
-	path.reduce()?;
-	// TODO
-	todo!();
 }

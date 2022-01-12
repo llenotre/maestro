@@ -20,9 +20,9 @@ pub struct Madt {
 	/// The table's header.
 	pub header: ACPITableHeader,
 
-	/// The address of the APIC.
+	/// The physical address at which each process can access its local interrupt controller.
 	pub local_apic_addr: u32,
-	/// TODO doc
+	/// APIC flags.
 	pub flags: u32,
 }
 

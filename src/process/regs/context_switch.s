@@ -19,38 +19,33 @@ context_switch:
 	# Setting segment registers
 	mov 8(%ebp), %eax
 	mov %ax, %ds
-	mov %ax, %es
-	mov %ax, %fs
-	mov %ax, %gs
 
-	# Setting general purpose registers, except %eax
+	# Restoring the fx state
 	mov 4(%ebp), %eax
-	mov 20(%eax), %ebx
-	mov 24(%eax), %ecx
-	mov 28(%eax), %edx
-	mov 32(%eax), %esi
-	mov 36(%eax), %edi
+	add $0x28, %eax
+	push %eax
+	call restore_fxstate
+	add $4, %esp
+
+	# Setting registers, except %eax
+	mov 4(%ebp), %eax
+	mov 0x14(%eax), %ebx
+	mov 0x18(%eax), %ecx
+	mov 0x1c(%eax), %edx
+	mov 0x20(%eax), %esi
+	mov 0x24(%eax), %edi
 
 	# Placing iret data on the stack
 	# (Note: If set, the interrupt flag in eflags will enable the interruptions back after using `iret`)
-	push 8(%ebp)
-	push 4(%eax)
-	push 12(%eax)
-	push 12(%ebp)
-	push 8(%eax)
+	push 8(%ebp) # data segment selector
+	push 0x4(%eax) # esp
+	push 0xc(%eax) # eflags
+	push 12(%ebp) # code segment selector
+	push 0x8(%eax) # eip
 
 	# Setting %eax
-	push 16(%ebp)
-	mov (%eax), %ebp
-	mov 16(%eax), %eax
-
-	# Calling end_of_interrupt
-	pusha
-	push $0x0
-	call end_of_interrupt
-	add $4, %esp
-	popa
-	add $4, %esp
+	mov 0x0(%eax), %ebp
+	mov 0x10(%eax), %eax
 
 	iret
 
@@ -60,9 +55,11 @@ context_switch:
 context_switch_kernel:
 	cli
 
-	# Calling end_of_interrupt
-	push $0x0
-	call end_of_interrupt
+	# Restoring the fx state
+	mov 4(%ebp), %eax
+	add $0x28, %eax
+	push %eax
+	call restore_fxstate
 	add $4, %esp
 
 	mov 4(%esp), %eax
@@ -75,26 +72,18 @@ context_switch_kernel:
 	push %ebx
 	popf
 
-	# Setting general purpose registers
-	mov (%eax), %ebp
-	mov 4(%eax), %esp
-	mov 8(%eax), %ebx
-	movl %ebx, jmp_addr
-	mov 20(%eax), %ebx
-	mov 24(%eax), %ecx
-	mov 28(%eax), %edx
-	mov 32(%eax), %esi
-	mov 36(%eax), %edi
-	mov 16(%eax), %eax
+	# Setting registers
+	mov 0x0(%eax), %ebp
+	mov 0x4(%eax), %esp
+	push 0x8(%eax) # eip
+	mov 0x14(%eax), %ebx
+	mov 0x18(%eax), %ecx
+	mov 0x1c(%eax), %edx
+	mov 0x20(%eax), %esi
+	mov 0x24(%eax), %edi
+	mov 0x10(%eax), %eax
 
 	# Setting the interrupt flag and jumping to kernel code execution
 	# (Note: These two instructions, if placed in this order are atomic on x86, meaning that an interrupt cannot happen in between)
 	sti
-	jmp *jmp_addr
-
-.section .data
-
-// A location in memory storing the pointer to jump to.
-// This location has to be used to avoid using a register.
-jmp_addr:
-	.long 0
+	ret

@@ -1,17 +1,24 @@
-//! TODO doc
+//! The _exit syscall allows to terminate the current process with the given status code.
 
+use core::arch::asm;
 use crate::process::Process;
-use crate::process::tss;
-use crate::util;
+use crate::process::Regs;
 
 /// The implementation of the `write` syscall.
-pub fn _exit(proc: &mut Process, regs: &util::Regs) -> ! {
-	proc.exit(regs.eax);
+pub fn _exit(regs: &Regs) -> ! {
+	{
+		let mutex = Process::get_current().unwrap();
+		let mut guard = mutex.lock();
+		let proc = guard.get_mut();
 
-	// TODO Fix: The stack might be removed while being used (example: process is
-	// killed, its exit status is retrieved from another CPU core and then the process
-	// is removed)
-	unsafe {
-		crate::loop_reset(tss::get().esp0 as _);
+		proc.exit(regs.ebx);
 	}
+
+	unsafe {
+		// Waiting for the next tick
+		asm!("jmp $kernel_loop");
+	}
+
+	// This loop is here only to avoid a compilation error
+	loop {}
 }

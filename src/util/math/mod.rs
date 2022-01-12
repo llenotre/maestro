@@ -43,13 +43,15 @@ pub fn pow2<T>(n: T) -> T where T: From<u8> + core::ops::Shl<Output = T> {
 /// Computes a^^b on integers (where `^^` is an exponent).
 #[inline(always)]
 pub fn pow<T>(a: T, b: usize) -> T where T: From<u8> + core::ops::Mul<Output = T> + Copy {
-	let mut n = T::from(1);
-
-	for _ in 0..b {
-		n = n * a;
+	if b == 0 {
+		T::from(1)
+	} else if b == 1 {
+		a
+	} else if b % 2 == 0 {
+		pow(a * a, b / 2)
+	} else {
+		a * pow(a * a, b / 2)
 	}
-
-	n
 }
 
 /// Computes floor(log2(n)) on unsigned integers without using floating-point numbers.
@@ -67,7 +69,17 @@ pub fn log2<T>(n: T) -> T
 	}
 }
 
-// TODO Make documentation clearer
+/// Tells whether the given number is a power of two.
+/// If `n` is zero, the behaviour is undefined.
+pub fn is_power_of_two<T>(n: T) -> bool
+	where T: Copy
+		+ From<u8>
+		+ core::ops::BitAnd<Output = T>
+		+ core::ops::Sub<Output = T>
+		+ core::cmp::PartialEq {
+	n == T::from(0) || n & (n - T::from(1)) == T::from(0)
+}
+
 /// Computes a linear interpolation over integers.
 /// The function computes the interpolation coefficient relative to the parameters `x`, `a_x` and
 /// `b_x`.
@@ -137,7 +149,7 @@ mod test {
 	}
 
 	#[test_case]
-	fn pow1() {
+	fn pow2() {
 		assert_eq!(pow::<u32>(10, 0), 1);
 		assert_eq!(pow::<u32>(10, 1), 10);
 		assert_eq!(pow::<u32>(10, 2), 100);
@@ -155,5 +167,12 @@ mod test {
 		assert_eq!(gcd(48, 18), 6);
 	}
 
-	// TODO Test every functions
+	#[test_case]
+	fn is_power_of_two() {
+		for i in 0..31 {
+			let n = (1 as u32) << i;
+			debug_assert!(is_power_of_two(n));
+			debug_assert!(!is_power_of_two(!n));
+		}
+	}
 }

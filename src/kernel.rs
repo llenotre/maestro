@@ -2,17 +2,16 @@
 //! the kernel's internals.
 
 #![no_std]
+
+#![allow(unused_attributes)]
 #![no_main]
 
 #![feature(allow_internal_unstable)]
-#![feature(asm)]
 #![feature(coerce_unsized)]
 #![feature(const_fn_trait_bound)]
 #![feature(const_maybe_uninit_assume_init)]
 #![feature(const_mut_refs)]
 #![feature(const_ptr_offset)]
-#![feature(const_raw_ptr_deref)]
-#![feature(const_raw_ptr_to_usize_cast)]
 #![feature(core_intrinsics)]
 #![feature(custom_test_frameworks)]
 #![feature(dispatch_from_dyn)]
@@ -20,9 +19,9 @@
 #![feature(lang_items)]
 #![feature(llvm_asm)]
 #![feature(maybe_uninit_extra)]
-#![feature(maybe_uninit_ref)]
 #![feature(panic_info_message)]
 #![feature(slice_ptr_get)]
+#![feature(slice_ptr_len)]
 #![feature(stmt_expr_attributes)]
 #![feature(unsize)]
 
@@ -33,121 +32,192 @@
 #![test_runner(crate::selftest::runner)]
 #![reexport_test_harness_main = "kernel_selftest"]
 
-mod acpi;
-mod cmdline;
-mod cpu;
-mod debug;
-mod device;
-mod elf;
-mod errno;
-mod event;
-mod file;
-mod gdt;
+pub mod acpi;
+pub mod cmdline;
+pub mod cpu;
+pub mod crypto;
+pub mod debug;
+pub mod device;
+pub mod elf;
+pub mod errno;
+pub mod event;
+pub mod file;
+pub mod gdt;
 #[macro_use]
-mod idt;
-mod limits;
-mod logger;
-mod memory;
-mod module;
-mod multiboot;
+pub mod idt;
+pub mod io;
+pub mod limits;
+pub mod logger;
+pub mod memory;
+pub mod module;
+pub mod multiboot;
 #[macro_use]
-mod panic;
+pub mod panic;
+pub mod pit;
 #[macro_use]
-mod print;
-mod process;
-mod selftest;
-mod syscall;
-mod time;
-mod tty;
+pub mod print;
+pub mod process;
+pub mod selftest;
+pub mod syscall;
+pub mod time;
+pub mod tty;
 #[macro_use]
-mod util;
+pub mod util;
 #[macro_use]
-mod vga;
+pub mod vga;
 
 use core::ffi::c_void;
 use core::panic::PanicInfo;
+use core::ptr::null;
+use crate::errno::Errno;
 use crate::file::path::Path;
 use crate::memory::dma;
 use crate::memory::vmem::VMem;
+use crate::memory::vmem;
 use crate::process::Process;
+use crate::process::exec::exec;
 use crate::util::boxed::Box;
+use crate::util::lock::Mutex;
 
 /// The kernel's name.
-const KERNEL_NAME: &str = "maestro";
+pub const NAME: &str = "maestro";
 /// Current kernel version.
-const KERNEL_VERSION: &str = "1.0";
+pub const VERSION: &str = "1.0";
 
-mod kern {
-	use core::ffi::c_void;
+/// The path to the init process binary.
+const INIT_PATH: &str = "/sbin/init";
+/// The default environment for the init process.
+const DEFAULT_ENVIRONMENT: &[&str] = &[
+	"PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin",
+	"TERM=maestro",
+];
 
-	extern "C" {
-		pub fn kernel_wait();
-		pub fn kernel_loop() -> !;
-		pub fn kernel_loop_reset(stack: *mut c_void) -> !;
-		pub fn kernel_halt() -> !;
-	}
+extern "C" {
+	fn kernel_wait();
+	fn kernel_loop() -> !;
+	fn kernel_loop_reset(stack: *mut c_void) -> !;
+	fn kernel_halt() -> !;
 }
 
 /// Makes the kernel wait for an interrupt, then returns.
 /// This function enables interrupts.
 pub fn wait() {
 	unsafe {
-		kern::kernel_wait();
+		kernel_wait();
 	}
 }
 
 /// Enters the kernel loop and processes every interrupts indefinitely.
 pub fn enter_loop() -> ! {
 	unsafe {
-		kern::kernel_loop();
+		kernel_loop();
 	}
 }
 
 /// Resets the stack to the given value, then calls `enter_loop`.
 /// The function is unsafe because the pointer passed in parameter might be invalid.
 pub unsafe fn loop_reset(stack: *mut c_void) -> ! {
-	kern::kernel_loop_reset(stack);
+	kernel_loop_reset(stack);
 }
 
 /// Halts the kernel until reboot.
 pub fn halt() -> ! {
 	unsafe {
-		kern::kernel_halt();
+		kernel_halt();
 	}
 }
 
-mod io {
-	extern "C" {
-		/// Inputs a byte from the specified port.
-		pub fn inb(port: u16) -> u8;
-		/// Inputs a word from the specified port.
-		pub fn inw(port: u16) -> u16;
-		/// Inputs a long from the specified port.
-		pub fn inl(port: u16) -> u32;
-		/// Outputs a byte to the specified port.
-		pub fn outb(port: u16, value: u8);
-		/// Outputs a word to the specified port.
-		pub fn outw(port: u16, value: u16);
-		/// Outputs a long to the specified port.
-		pub fn outl(port: u16, value: u32);
-	}
+/// Field storing the kernel's virtual memory context.
+static KERNEL_VMEM: Mutex<Option<Box<dyn VMem>>> = Mutex::new(None);
+
+/// Initializes the kernel's virtual memory context.
+fn init_vmem() -> Result<(), Errno> {
+	let mut kernel_vmem = vmem::new()?;
+
+	// TODO If Meltdown mitigation is enabled, only allow read access to a stub of the
+	// kernel for interrupts
+
+	// TODO Enable GLOBAL in cr4
+
+	// Mapping the kernelspace
+	kernel_vmem.map_range(null::<c_void>(),
+		memory::PROCESS_END,
+		memory::get_kernelspace_size() / memory::PAGE_SIZE,
+		vmem::x86::FLAG_WRITE | vmem::x86::FLAG_GLOBAL)?;
+
+	// Mapping VGA's buffer
+	let vga_flags = vmem::x86::FLAG_CACHE_DISABLE | vmem::x86::FLAG_WRITE_THROUGH
+		| vmem::x86::FLAG_WRITE;
+	kernel_vmem.map_range(vga::BUFFER_PHYS as _, vga::get_buffer_virt() as _, 1, vga_flags)?;
+
+	// Making the kernel image read-only
+	kernel_vmem.protect_kernel()?;
+
+	// Assigning to the global variable
+	*KERNEL_VMEM.lock().get_mut() = Some(kernel_vmem);
+
+	// Binding the kernel virtual memory context
+	bind_vmem();
+	Ok(())
 }
 
-/// Initializes virtual memory.
-/// `acpi` tells whether ACPI has been enabled and if its DMA zones should be mapped.
-fn init_vmem() -> Box<dyn VMem> {
-	let kernel_vmem = memory::vmem::new();
-	if kernel_vmem.is_err() {
-		crate::kernel_panic!("Cannot initialize kernel virtual memory!", 0);
-	}
+/// Returns the kernel's virtual memory context.
+pub fn get_vmem() -> &'static Mutex<Option<Box<dyn VMem>>> {
+	&KERNEL_VMEM
+}
 
-    let kernel_vmem = kernel_vmem.unwrap();
-    kernel_vmem.bind();
-    kernel_vmem
+/// Tells whether memory management has been fully initialized.
+pub fn is_memory_init() -> bool {
+	get_vmem().lock().get().is_some()
+}
+
+/// Binds the kernel's virtual memory context.
+/// If the kernel vmem is not initialized, the function does nothing.
+pub fn bind_vmem() {
+	let guard = KERNEL_VMEM.lock();
+
+	if let Some(vmem) = guard.get().as_ref() {
+		vmem.bind();
+	}
 }
 
 extern "C" {
 	fn test_process();
+}
+
+/// Returns the error message for the given errno for init process execution.
+fn get_init_error_message(errno: Errno) -> &'static str {
+	match errno {
+		errno::ENOENT => "Cannot find init process binary!",
+		errno::ENOEXEC => "Init file is not executable!",
+		errno::ENOMEM => "Cannot allocate memory to run the init process!",
+
+		_ => "Unknown error",
+	}
+}
+
+/// Launches the init process.
+fn init() -> Result<(), &'static str> {
+	let mutex = Process::new().or(Err("Failed to create init process!"))?;
+	let mut lock = mutex.lock();
+	let proc = lock.get_mut();
+
+	let result = if cfg!(config_debug_testprocess) {
+		// The pointer to the beginning of the test process
+		let test_begin = unsafe {
+			core::mem::transmute::<unsafe extern "C" fn(), *const c_void>(test_process)
+		};
+
+		proc.init_dummy(test_begin)
+	} else {
+		let path = Path::from_str(INIT_PATH.as_bytes(), false).or(Err("Unknown error"))?;
+		exec(proc, &path, &[INIT_PATH], DEFAULT_ENVIRONMENT)
+	};
+
+	match result {
+		Ok(_) => Ok(()),
+		Err(errno) => Err(get_init_error_message(errno)),
+	}
 }
 
 /// This is the main function of the Rust source code, responsible for the initialization of the
@@ -158,46 +228,68 @@ extern "C" {
 #[no_mangle]
 pub extern "C" fn kernel_main(magic: u32, multiboot_ptr: *const c_void) -> ! {
 	crate::cli!();
+	// Initializing TTY
 	tty::init();
 
 	if magic != multiboot::BOOTLOADER_MAGIC || !util::is_aligned(multiboot_ptr, 8) {
 		kernel_panic!("Bootloader non compliant with Multiboot2!", 0);
 	}
 
+	// Initializing IDT, PIT and events handler
 	idt::init();
 	let _pit = core::mem::ManuallyDrop::new(time::timer::pit::PITTimer::new(0).unwrap()); // TODO
 	event::init();
 
-	// TODO CPUID
+	// Ensuring the CPU has SSE
+	if !cpu::sse::is_present() {
+		kernel_panic!("SSE support is required to run this kernel :(");
+	}
+	cpu::sse::enable();
+
+	// Reading multiboot informations
 	multiboot::read_tags(multiboot_ptr);
 
+	// Initializing memory allocation
 	memory::memmap::init(multiboot_ptr);
 	if cfg!(config_debug_debug) {
 		memory::memmap::print_entries();
 	}
 	memory::alloc::init();
 	memory::malloc::init();
-    let mut kernel_vmem = init_vmem();
 
+	if init_vmem().is_err() {
+		crate::kernel_panic!("Cannot initialize kernel virtual memory!", 0);
+	}
+
+	// From here, the kernel considers that memory management has been fully initialized
+
+	// Performing kernel self-tests
 	#[cfg(test)]
 	#[cfg(config_debug_test)]
 	kernel_selftest();
 
+	// Parsing bootloader command line arguments
 	let args_parser = cmdline::ArgsParser::parse(&multiboot::get_boot_info().cmdline);
 	if let Err(e) = args_parser {
 		e.print();
-		halt();
+		crate::halt();
 	}
 	let args_parser = args_parser.unwrap();
 	logger::set_silent(args_parser.is_silent());
 
-	println!("Booting Maestro kernel version {}", KERNEL_VERSION);
+	println!("Booting Maestro kernel version {}", crate::VERSION);
 
 	println!("Initializing ACPI...");
 	acpi::init();
-    if dma::map(&mut kernel_vmem).is_err() {
-        crate::kernel_panic!("Failed to map DMA zones!");
-    }
+	// Mapping DMA onto kernel memory
+	{
+		let mut guard = KERNEL_VMEM.lock();
+		let kernel_vmem = guard.get_mut().as_mut().unwrap();
+
+		if dma::map(kernel_vmem).is_err() {
+			crate::kernel_panic!("Failed to map DMA zones on kernel memory!");
+		}
+	}
 
 	let cpu_count = cpu::get_count();
 	println!("{} CPUs are available", cpu_count);
@@ -230,15 +322,10 @@ pub extern "C" fn kernel_main(magic: u32, multiboot_ptr: *const c_void) -> ! {
 		kernel_panic!("Failed to init processes!", 0);
 	}
 
-	// TODO Start first process from disk (init program)
-	let test_begin = unsafe {
-		core::mem::transmute::<unsafe extern "C" fn(), *const c_void>(test_process)
-	};
-	if Process::new(None, 0, 0, test_begin, Path::root()).is_err() {
-		kernel_panic!("Failed to create init process!", 0);
+	if let Err(e) = init() {
+		kernel_panic!(e, 0);
 	}
-
-	enter_loop();
+	crate::enter_loop();
 }
 
 /// Called on Rust panic.
@@ -248,13 +335,17 @@ fn panic(panic_info: &PanicInfo) -> ! {
 	if selftest::is_running() {
 		println!("FAILED\n");
 		println!("Error: {}\n", panic_info);
+
+		#[cfg(config_debug_qemu)]
+		selftest::qemu::exit(selftest::qemu::FAILURE);
+		#[cfg(not(config_debug_qemu))]
 		halt();
 	}
 
 	if let Some(s) = panic_info.message() {
 		panic::rust_panic(s);
 	} else {
-		kernel_panic!("Rust panic (no payload)", 0);
+		crate::kernel_panic!("Rust panic (no payload)", 0);
 	}
 }
 

@@ -2,6 +2,7 @@
 
 use core::ffi::c_void;
 use core::mem::size_of;
+use core::str;
 use crate::elf;
 use crate::memory;
 use crate::multiboot;
@@ -10,12 +11,18 @@ use crate::multiboot;
 /// size `n` in bytes.
 pub unsafe fn print_memory(ptr: *const c_void, n: usize) {
 	let mut i = 0;
+
 	while i < n {
 		crate::print!("{:#08x}  ", ptr as usize + i);
 
 		let mut j = 0;
-		while j < 16 && i + j < n {
-			crate::print!("{:02x} ", *(((ptr as usize) + (i + j)) as *const u8));
+		while j < 16 {
+			if i + j < n {
+				crate::print!("{:02x} ", *(((ptr as usize) + (i + j)) as *const u8));
+			} else {
+				crate::print!("   ");
+			}
+
 			j += 1;
 		}
 
@@ -24,7 +31,7 @@ pub unsafe fn print_memory(ptr: *const c_void, n: usize) {
 		j = 0;
 		while j < 16 && i + j < n {
 			let val = *(((ptr as usize) + (i + j)) as *const u8);
-			let character = {
+			let c = {
 				if (32..127).contains(&val) {
 					val as char
 				} else {
@@ -32,7 +39,7 @@ pub unsafe fn print_memory(ptr: *const c_void, n: usize) {
 				}
 			};
 
-			crate::print!("{}", character);
+			crate::print!("{}", c);
 			j += 1;
 		}
 
@@ -55,11 +62,6 @@ pub fn print_callstack(ebp: *const u32, max_depth: usize) {
 	let mut i: usize = 0;
 	let mut ebp_ = ebp;
 	while !ebp_.is_null() && i < max_depth {
-		// TODO
-		/*if !vmem.is_mapped(ebp_) {
-			break;
-		}*/
-
 		let eip = unsafe {
 			*((ebp_ as usize + size_of::<usize>()) as *const u32) as *const c_void
 		};
@@ -70,6 +72,8 @@ pub fn print_callstack(ebp: *const u32, max_depth: usize) {
 		if let Some(name) = elf::get_function_name(memory::kern_to_virt(boot_info.elf_sections),
 			boot_info.elf_num as usize, boot_info.elf_shndx as usize,
 			boot_info.elf_entsize as usize, eip) {
+
+			let name = str::from_utf8(name).unwrap_or("<Invalid UTF8>");
 			crate::println!("{}: {:p} -> {}", i, eip, name);
 		} else {
 			crate::println!("{}: {:p} -> ???", i, eip);

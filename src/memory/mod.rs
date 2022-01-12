@@ -1,12 +1,18 @@
 //! The memory is one of the main component of the system.
 //! This module handles almost every memory-related features, including physical memory map
 //! retrieving, memory allocation, virtual memory management, ...
+//!
+//! The system's memory is divided in two chunks:
+//! - Userspace: Virtual memory below `PROCESS_END`, used by the currently running process
+//! - Kernelspace: Virtual memory above `PROCESS_END`, used by the kernel itself and shared accross
+//! processes
 
 pub mod alloc;
 pub mod buddy;
 pub mod dma;
 pub mod malloc;
 pub mod memmap;
+pub mod mmio;
 pub mod stack;
 pub mod vmem;
 
@@ -22,10 +28,6 @@ pub const KERNEL_PHYS_BEGIN: *const c_void = 0x100000 as *const _;
 pub const ALLOC_BEGIN: *const c_void = 0x40000000 as *const _;
 /// Pointer to the end of the virtual memory reserved to the process.
 pub const PROCESS_END: *const c_void = 0xc0000000 as *const _;
-/// The size of the kernelspace memory in bytes.
-pub const KERNEL_SIZE: usize = (!(1 as usize) - unsafe {
-	PROCESS_END as usize
-}) + 1;
 
 /// Symbols to the beginning and the end of the kernel.
 extern "C" {
@@ -43,6 +45,12 @@ pub fn get_kernel_virtual_begin() -> *const c_void {
 	unsafe {
 		&kernel_begin as *const _
 	}
+}
+
+/// The size of the kernelspace memory in bytes.
+#[inline(always)]
+pub fn get_kernelspace_size() -> usize {
+	usize::MAX - PROCESS_END as usize + 1
 }
 
 /// Returns the size of the kernel image in bytes.
@@ -71,8 +79,7 @@ pub fn get_kernel_virtual_end() -> *const c_void {
 
 /// Converts a kernel physical address to a virtual address.
 pub fn kern_to_virt(ptr: *const c_void) -> *const c_void {
-	if ptr < PROCESS_END {
-		// TODO Check that it will not overflow
+	if (ptr as usize) < get_kernelspace_size() {
 		((ptr as usize) + (PROCESS_END as usize)) as *const _
 	} else {
 		ptr
@@ -81,7 +88,7 @@ pub fn kern_to_virt(ptr: *const c_void) -> *const c_void {
 
 /// Converts a kernel virtual address to a physical address.
 pub fn kern_to_phys(ptr: *const c_void) -> *const c_void {
-	if ptr >= PROCESS_END {
+	if ptr as usize >= PROCESS_END as usize {
 		((ptr as usize) - (PROCESS_END as usize)) as *const _
 	} else {
 		ptr

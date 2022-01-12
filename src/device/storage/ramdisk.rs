@@ -2,6 +2,7 @@
 //! userspace, it works exactly the same.
 //! Ramdisks are lazily allocated so they do not use much memory as long as they are not used.
 
+use core::ffi::c_void;
 use core::mem::ManuallyDrop;
 use crate::device::Device;
 use crate::device::DeviceHandle;
@@ -12,6 +13,7 @@ use crate::errno::Errno;
 use crate::errno;
 use crate::file::path::Path;
 use crate::memory::malloc;
+use crate::util::IO;
 use crate::util::container::string::String;
 use super::StorageInterface;
 
@@ -62,7 +64,7 @@ impl StorageInterface for RAMDisk {
 		(RAM_DISK_SIZE as u64) / self.get_block_size()
 	}
 
-	fn read(&mut self, buf: &mut [u8], offset: u64, size: u64) -> Result<(), Errno> {
+	fn read(&self, buf: &mut [u8], offset: u64, size: u64) -> Result<(), Errno> {
 		if offset > self.get_blocks_count() || offset + size > self.get_blocks_count() {
 			return Err(errno::EINVAL);
 		}
@@ -127,11 +129,18 @@ impl RAMDiskHandle {
 }
 
 impl DeviceHandle for RAMDiskHandle {
+	fn ioctl(&mut self, _request: u32, _argp: *const c_void) -> Result<u32, Errno> {
+		// TODO
+		Err(errno::EINVAL)
+	}
+}
+
+impl IO for RAMDiskHandle {
 	fn get_size(&self) -> u64 {
 		RAM_DISK_SIZE as _
 	}
 
-	fn read(&mut self, offset: u64, buff: &mut [u8]) -> Result<usize, Errno> {
+	fn read(&self, offset: u64, buff: &mut [u8]) -> Result<usize, Errno> {
 		self.disk.read_bytes(buff, offset)
 	}
 
@@ -146,11 +155,11 @@ pub fn create() -> Result<(), Errno> {
 	let _major = ManuallyDrop::new(id::alloc_major(DeviceType::Block, Some(RAM_DISK_MAJOR))?);
 
 	for i in 0..RAM_DISK_COUNT {
-		let mut name = String::from("name")?;
+		let mut name = String::from(b"ram")?;
 		name.push_str(&String::from_number(i as _)?)?;
 
 		let mut path = Path::root();
-		path.push(String::from("/dev")?)?;
+		path.push(String::from(b"dev")?)?;
 		path.push(name)?;
 
 		device::register_device(Device::new(RAM_DISK_MAJOR, i as _, path, 0o666, DeviceType::Block,
@@ -160,7 +169,7 @@ pub fn create() -> Result<(), Errno> {
 	Ok(())
 }
 
-#[cfg(test)]
+/*#[cfg(test)]
 mod test {
 	use super::*;
 	use core::cmp::min;
@@ -270,4 +279,4 @@ mod test {
 			}
 		}
 	}
-}
+}*/

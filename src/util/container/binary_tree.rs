@@ -3,18 +3,21 @@
 use core::cmp::Ordering;
 use core::cmp::max;
 use core::fmt;
+use core::mem::ManuallyDrop;
 use core::mem::size_of;
+use core::mem;
 use core::ptr::NonNull;
 use core::ptr::drop_in_place;
 use core::ptr;
 use crate::errno::Errno;
 use crate::memory::malloc;
+use crate::memory;
 use crate::util::FailableClone;
-use crate::util;
 
-// TODO Fix: an element in a tree might be at the wrong place after being modified by mutable
-// reference
-// TODO Use boxes for nodes?
+#[cfg(config_debug_debug)]
+use core::ffi::c_void;
+#[cfg(config_debug_debug)]
+use crate::util::container::vec::Vec;
 
 /// The color of a binary tree node.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -24,7 +27,7 @@ enum NodeColor {
 }
 
 /// A node in the binary tree.
-struct BinaryTreeNode<T> {
+struct BinaryTreeNode<K, V> {
 	/// Pointer to the parent node
 	parent: Option<NonNull<Self>>,
 	/// Pointer to the left child
@@ -34,14 +37,19 @@ struct BinaryTreeNode<T> {
 	/// The color of the node
 	color: NodeColor,
 
-	value: T,
+	/// The node's key.
+	key: K,
+	/// The node's value.
+	value: V,
 }
 
 /// Unwraps the given pointer option into a reference option.
-fn unwrap_pointer<T>(ptr: &Option::<NonNull::<BinaryTreeNode::<T>>>)
-	-> Option::<&'static BinaryTreeNode::<T>> {
+#[inline]
+fn unwrap_pointer<K, V>(ptr: &Option<NonNull<BinaryTreeNode<K, V>>>)
+	-> Option<&'static BinaryTreeNode<K, V>> {
 	if let Some(p) = ptr {
 		unsafe {
+			debug_assert!(p.as_ptr() as usize >= memory::PROCESS_END as usize);
 			Some(&*p.as_ptr())
 		}
 	} else {
@@ -50,10 +58,12 @@ fn unwrap_pointer<T>(ptr: &Option::<NonNull::<BinaryTreeNode::<T>>>)
 }
 
 /// Same as `unwrap_pointer` but returns a mutable reference.
-fn unwrap_pointer_mut<T>(ptr: &mut Option::<NonNull::<BinaryTreeNode::<T>>>)
-	-> Option::<&'static mut BinaryTreeNode::<T>> {
+#[inline]
+fn unwrap_pointer_mut<K, V>(ptr: &mut Option<NonNull<BinaryTreeNode<K, V>>>)
+	-> Option<&'static mut BinaryTreeNode<K, V>> {
 	if let Some(p) = ptr {
 		unsafe {
+			debug_assert!(p.as_ptr() as usize >= memory::PROCESS_END as usize);
 			Some(&mut *(p.as_ptr() as *mut _))
 		}
 	} else {
@@ -61,9 +71,9 @@ fn unwrap_pointer_mut<T>(ptr: &mut Option::<NonNull::<BinaryTreeNode::<T>>>)
 	}
 }
 
-impl<T: 'static> BinaryTreeNode<T> {
+impl<K: 'static + Ord, V: 'static> BinaryTreeNode<K, V> {
 	/// Creates a new node with the given `value`. The node is colored Red by default.
-	pub fn new(value: T) -> Result<NonNull::<Self>, Errno> {
+	pub fn new(key: K, value: V) -> Result<NonNull<Self>, Errno> {
 		let ptr = unsafe {
 			malloc::alloc(size_of::<Self>())? as *mut Self
 		};
@@ -73,55 +83,68 @@ impl<T: 'static> BinaryTreeNode<T> {
 			right: None,
 			color: NodeColor::Red,
 
+			key,
 			value,
 		};
-		unsafe {
-			util::write_ptr(ptr, s);
+
+		debug_assert!(ptr as usize >= memory::PROCESS_END as usize);
+		unsafe { // Safe because the pointer is valid
+			ptr::write_volatile(ptr, s);
 		}
+
 		Ok(NonNull::new(ptr).unwrap())
 	}
 
 	/// Tells whether the node is red.
+	#[inline]
 	pub fn is_red(&self) -> bool {
 		self.color == NodeColor::Red
 	}
 
 	/// Tells whether the node is black.
+	#[inline]
 	pub fn is_black(&self) -> bool {
 		self.color == NodeColor::Black
 	}
 
 	/// Returns a reference to the left child node.
-	pub fn get_parent(&self) -> Option::<&'static Self> {
+	#[inline]
+	pub fn get_parent(&self) -> Option<&'static Self> {
 		unwrap_pointer(&self.parent)
 	}
 
 	/// Returns a reference to the parent child node.
-	pub fn get_parent_mut(&mut self) -> Option::<&'static mut Self> {
+	#[inline]
+	pub fn get_parent_mut(&mut self) -> Option<&'static mut Self> {
 		unwrap_pointer_mut(&mut self.parent)
 	}
 
 	/// Returns a mutable reference to the parent child node.
-	pub fn get_left(&self) -> Option::<&'static Self> {
+	#[inline]
+	pub fn get_left(&self) -> Option<&'static Self> {
 		unwrap_pointer(&self.left)
 	}
 
 	/// Returns a reference to the left child node.
-	pub fn get_left_mut(&mut self) -> Option::<&'static mut Self> {
+	#[inline]
+	pub fn get_left_mut(&mut self) -> Option<&'static mut Self> {
 		unwrap_pointer_mut(&mut self.left)
 	}
 
 	/// Returns a reference to the left child node.
-	pub fn get_right(&self) -> Option::<&'static Self> {
+	#[inline]
+	pub fn get_right(&self) -> Option<&'static Self> {
 		unwrap_pointer(&self.right)
 	}
 
 	/// Returns a reference to the left child node.
-	pub fn get_right_mut(&mut self) -> Option::<&'static mut Self> {
+	#[inline]
+	pub fn get_right_mut(&mut self) -> Option<&'static mut Self> {
 		unwrap_pointer_mut(&mut self.right)
 	}
 
 	/// Tells whether the node is a left child.
+	#[inline]
 	pub fn is_left_child(&self) -> bool {
 		if let Some(parent) = self.get_parent() {
 			if let Some(n) = parent.get_left() {
@@ -133,6 +156,7 @@ impl<T: 'static> BinaryTreeNode<T> {
 	}
 
 	/// Tells whether the node is a right child.
+	#[inline]
 	pub fn is_right_child(&self) -> bool {
 		if let Some(parent) = self.get_parent() {
 			if let Some(n) = parent.get_right() {
@@ -144,161 +168,184 @@ impl<T: 'static> BinaryTreeNode<T> {
 	}
 
 	/// Tells whether the node and its parent and grandparent form a triangle.
+	#[inline]
 	pub fn is_triangle(&self) -> bool {
 		if let Some(parent) = self.get_parent() {
-			if let Some(grandparent) = parent.get_parent() {
-				return parent.is_left_child() != grandparent.is_left_child();
-			}
-		}
-
-		false
-	}
-
-	/// Tells whether the node and its parent and grandparent form a line.
-	pub fn is_line(&self) -> bool {
-		if let Some(parent) = self.get_parent() {
-			if let Some(grandparent) = parent.get_parent() {
-				return parent.is_left_child() == grandparent.is_left_child();
-			}
+			return self.is_left_child() != parent.is_left_child();
 		}
 
 		false
 	}
 
 	/// Returns a reference to the grandparent node.
-	pub fn get_grandparent(&self) -> Option::<&'static Self> {
-		if let Some(p) = self.get_parent() {
-			p.get_parent()
-		} else {
-			None
-		}
+	#[inline]
+	pub fn get_grandparent(&self) -> Option<&'static Self> {
+		self.get_parent()?.get_parent()
 	}
 
 	/// Returns a mutable reference to the grandparent node.
-	pub fn get_grandparent_mut(&mut self) -> Option::<&'static mut Self> {
-		if let Some(p) = self.get_parent_mut() {
-			p.get_parent_mut()
-		} else {
-			None
-		}
+	#[inline]
+	pub fn get_grandparent_mut(&mut self) -> Option<&'static mut Self> {
+		self.get_parent_mut()?.get_parent_mut()
 	}
 
 	/// Returns a reference to the sibling node.
-	pub fn get_sibling(&self) -> Option::<&'static Self> {
-		if let Some(parent) = self.get_parent() {
-			if self.is_left_child() {
-				parent.get_right()
-			} else {
-				parent.get_left()
-			}
+	#[inline]
+	pub fn get_sibling(&self) -> Option<&'static Self> {
+		let parent = self.get_parent()?;
+
+		if self.is_left_child() {
+			parent.get_right()
 		} else {
-			None
+			parent.get_left()
 		}
 	}
 
 	/// Returns a mutable reference to the sibling node.
-	pub fn get_sibling_mut(&mut self) -> Option::<&'static mut Self> {
-		if let Some(parent) = self.get_parent_mut() {
-			if self.is_left_child() {
-				parent.get_right_mut()
-			} else {
-				parent.get_left_mut()
-			}
+	#[inline]
+	pub fn get_sibling_mut(&mut self) -> Option<&'static mut Self> {
+		let parent = self.get_parent_mut()?;
+
+		if self.is_left_child() {
+			parent.get_right_mut()
 		} else {
-			None
+			parent.get_left_mut()
 		}
 	}
 
 	/// Returns a reference to the uncle node.
-	pub fn get_uncle(&mut self) -> Option::<&'static Self> {
-		if let Some(parent) = self.get_parent() {
-			parent.get_sibling()
-		} else {
-			None
-		}
+	#[inline]
+	pub fn get_uncle(&mut self) -> Option<&'static Self> {
+		self.get_parent()?.get_sibling()
 	}
 
 	/// Returns a mutable reference to the uncle node.
-	pub fn get_uncle_mut(&mut self) -> Option::<&'static mut Self> {
-		if let Some(parent) = self.get_parent_mut() {
-			parent.get_sibling_mut()
-		} else {
-			None
-		}
+	#[inline]
+	pub fn get_uncle_mut(&mut self) -> Option<&'static mut Self> {
+		self.get_parent_mut()?.get_sibling_mut()
 	}
 
-	/// Applies a left tree rotation with the current node as pivot.
+	/// Tells whether the node has at least one red child.
+	#[inline]
+	pub fn has_red_child(&self) -> bool {
+		if let Some(left) = self.get_left() {
+			if left.is_red() {
+				return true;
+			}
+		}
+
+		if let Some(right) = self.get_right() {
+			if right.is_red() {
+				return true;
+			}
+		}
+
+		false
+	}
+
+	/// Applies a left tree rotation with the current node as root.
+	/// If the current node doesn't have a right child, the function does nothing.
 	pub fn left_rotate(&mut self) {
-		let root = self.get_parent_mut();
-		let root_ptr = unsafe {
-			&mut *(root.unwrap() as *mut Self)
-		};
-		let left = self.left;
+		if let Some(pivot) = self.get_right_mut() {
+			if let Some(parent) = self.get_parent_mut() {
+				if self.is_right_child() {
+					parent.right = NonNull::new(pivot);
+				} else {
+					parent.left = NonNull::new(pivot);
+				}
 
-		self.left = NonNull::new(root_ptr);
-		root_ptr.parent = NonNull::new(self);
+				pivot.parent = NonNull::new(parent);
+			} else {
+				pivot.parent = None;
+			}
 
-		root_ptr.right = left;
-		if let Some(left) = left {
-			unsafe {
-				&mut *(left.as_ptr() as *mut Self)
-			}.parent = NonNull::new(root_ptr);
+			let left = pivot.get_left_mut();
+			pivot.left = NonNull::new(self);
+			self.parent = NonNull::new(pivot);
+
+			if let Some(left) = left {
+				self.right = NonNull::new(left);
+				left.parent = NonNull::new(self);
+			} else {
+				self.right = None;
+			}
 		}
 	}
 
-	/// Applies a right tree rotation with the current node as pivot.
+	/// Applies a right tree rotation with the current node as root.
+	/// If the current node doesn't have a left child, the function does nothing.
 	pub fn right_rotate(&mut self) {
-		let root = self.get_parent_mut();
-		let root_ptr = unsafe {
-			&mut *(root.unwrap() as *mut Self)
-		};
-		let right = self.right;
+		if let Some(pivot) = self.get_left_mut() {
+			if let Some(parent) = self.get_parent_mut() {
+				if self.is_left_child() {
+					parent.left = NonNull::new(pivot);
+				} else {
+					parent.right = NonNull::new(pivot);
+				}
 
-		self.right = NonNull::new(root_ptr);
-		root_ptr.parent = NonNull::new(self);
+				pivot.parent = NonNull::new(parent);
+			} else {
+				pivot.parent = None;
+			}
 
-		root_ptr.left = right;
-		if let Some(right) = right {
-			unsafe {
-				&mut *(right.as_ptr() as *mut Self)
-			}.parent = NonNull::new(root_ptr);
+			let right = pivot.get_right_mut();
+			pivot.right = NonNull::new(self);
+			self.parent = NonNull::new(pivot);
+
+			if let Some(right) = right {
+				self.left = NonNull::new(right);
+				right.parent = NonNull::new(self);
+			} else {
+				self.left = None;
+			}
 		}
 	}
 
-	/// Inserts the given node `node` to left of the current node.
-	pub fn insert_left(&mut self, node: &mut BinaryTreeNode::<T>) {
-		if let Some(n) = self.get_left_mut() {
-			node.insert_left(n);
-		}
+	/// Inserts the given node `node` to left of the current node. If the node already has a left
+	/// child, the behaviour is undefined.
+	#[inline]
+	pub fn insert_left(&mut self, node: &mut BinaryTreeNode<K, V>) {
+		debug_assert!(self.get_left().is_none());
+		debug_assert!(node.get_parent().is_none());
+
 		self.left = NonNull::new(node);
 		node.parent = NonNull::new(self);
 	}
 
-	/// Inserts the given node `node` to right of the current node.
-	pub fn insert_right(&mut self, node: &mut BinaryTreeNode::<T>) {
-		if let Some(n) = self.get_right_mut() {
-			node.insert_right(n);
-		}
+	/// Inserts the given node `node` to right of the current node. If the node already has a right
+	/// child, the behaviour is undefined.
+	#[inline]
+	pub fn insert_right(&mut self, node: &mut BinaryTreeNode<K, V>) {
+		debug_assert!(self.get_right().is_none());
+		debug_assert!(node.get_parent().is_none());
+
 		self.right = NonNull::new(node);
 		node.parent = NonNull::new(self);
 	}
 
 	/// Returns the number of nodes in the subtree.
+	/// This function has `O(n)` complexity.
 	pub fn nodes_count(&self) -> usize {
-		let left_count = if let Some(l) = self.get_left() {
-			l.nodes_count()
-		} else {
-			0
+		let left_count = {
+			if let Some(l) = self.get_left() {
+				l.nodes_count()
+			} else {
+				0
+			}
 		};
-		let right_count = if let Some(r) = self.get_right() {
-			r.nodes_count()
-		} else {
-			0
+		let right_count = {
+			if let Some(r) = self.get_right() {
+				r.nodes_count()
+			} else {
+				0
+			}
 		};
+
 		1 + left_count + right_count
 	}
 
 	/// Returns the depth of the node in the tree.
+	/// This function has `O(log n)` complexity.
 	pub fn get_node_depth(&self) -> usize {
 		if let Some(p) = self.get_parent() {
 			p.get_node_depth() + 1
@@ -308,32 +355,44 @@ impl<T: 'static> BinaryTreeNode<T> {
 	}
 
 	/// Returns the black depth of the node in the tree.
+	/// This function has `O(log n)` complexity.
 	pub fn get_node_black_depth(&self) -> usize {
-		let parent = if let Some(p) = self.get_parent() {
-			p.get_node_black_depth()
-		} else {
-			0
+		let parent = {
+			if let Some(p) = self.get_parent() {
+				p.get_node_black_depth()
+			} else {
+				0
+			}
 		};
-		let curr = if self.is_black() {
-			1
-		} else {
-			0
+		let curr = {
+			if self.is_black() {
+				1
+			} else {
+				0
+			}
 		};
+
 		parent + curr
 	}
 
 	/// Returns the depth of the subtree.
+	/// This function has `O(log n)` complexity.
 	pub fn get_depth(&self) -> usize {
-		let left_count = if let Some(l) = self.get_left() {
-			l.nodes_count()
-		} else {
-			0
+		let left_count = {
+			if let Some(l) = self.get_left() {
+				l.get_depth()
+			} else {
+				0
+			}
 		};
-		let right_count = if let Some(r) = self.get_right() {
-			r.nodes_count()
-		} else {
-			0
+		let right_count = {
+			if let Some(r) = self.get_right() {
+				r.get_depth()
+			} else {
+				0
+			}
 		};
+
 		1 + max(left_count, right_count)
 	}
 
@@ -345,24 +404,27 @@ impl<T: 'static> BinaryTreeNode<T> {
 			} else if self.is_right_child() {
 				parent.right = None;
 			}
+
 			self.parent = None;
 		}
 
 		if let Some(left) = self.get_left_mut() {
 			if let Some(p) = left.parent {
-				if p.as_ptr() == self as _ {
+				if ptr::eq(p.as_ptr(), self as _) {
 					left.parent = None;
 				}
 			}
+
 			self.left = None;
 		}
 
 		if let Some(right) = self.get_right_mut() {
 			if let Some(p) = right.parent {
-				if p.as_ptr() == self as _ {
+				if ptr::eq(p.as_ptr(), self as _) {
 					right.parent = None;
 				}
 			}
+
 			self.right = None;
 		}
 	}
@@ -383,12 +445,12 @@ pub enum TraversalType {
 
 /// A binary tree is a structure which allows, when properly balanced, to performs actions
 /// (insertion, removal, searching) in O(log n) complexity.
-pub struct BinaryTree<T: 'static> {
+pub struct BinaryTree<K: 'static + Ord, V: 'static> {
 	/// The root node of the binary tree.
-	root: Option<NonNull<BinaryTreeNode<T>>>,
+	root: Option<NonNull<BinaryTreeNode<K, V>>>,
 }
 
-impl<T: 'static + Ord> BinaryTree<T> {
+impl<K: 'static + Ord, V: 'static> BinaryTree<K, V> {
 	/// Creates a new binary tree.
 	pub const fn new() -> Self {
 		Self {
@@ -397,34 +459,30 @@ impl<T: 'static + Ord> BinaryTree<T> {
 	}
 
 	/// Tells whether the tree is empty.
+	#[inline]
 	pub fn is_empty(&self) -> bool {
 		self.root.is_none()
 	}
 
 	/// Returns a reference to the root node.
-	fn get_root(&self) -> Option::<&BinaryTreeNode::<T>> {
-		if let Some(r) = self.root.as_ref() {
-			unsafe {
-				Some(r.as_ref())
-			}
-		} else {
-			None
+	#[inline]
+	fn get_root(&self) -> Option<&'static BinaryTreeNode<K, V>> {
+		unsafe {
+			Some(self.root.as_ref()?.as_ref())
 		}
 	}
 
 	/// Returns a mutable reference to the root node.
-	fn get_root_mut(&mut self) -> Option::<&mut BinaryTreeNode::<T>> {
-		if let Some(r) = self.root.as_mut() {
-			unsafe {
-				Some(r.as_mut())
-			}
-		} else {
-			None
+	#[inline]
+	fn get_root_mut(&mut self) -> Option<&'static mut BinaryTreeNode<K, V>> {
+		unsafe {
+			Some(self.root.as_mut()?.as_mut())
 		}
 	}
 
-	/// Returns the number of nodes in the tree.
-	pub fn nodes_count(&self) -> usize {
+	/// Returns the number of elements in the tree.
+	/// This function has `O(n)` complexity.
+	pub fn count(&self) -> usize {
 		if let Some(r) = self.get_root() {
 			r.nodes_count()
 		} else {
@@ -433,6 +491,7 @@ impl<T: 'static + Ord> BinaryTree<T> {
 	}
 
 	/// Returns the depth of the tree.
+	/// This function has `O(log n)` complexity.
 	pub fn get_depth(&self) -> usize {
 		if let Some(r) = self.get_root() {
 			r.get_depth()
@@ -441,100 +500,111 @@ impl<T: 'static + Ord> BinaryTree<T> {
 		}
 	}
 
-	/// Searches for a node with the given value in the tree and returns a reference.
-	/// `val` is the value to find.
-	fn get_node<T_: 'static>(&self, val: T_) -> Option::<&BinaryTreeNode::<T>>
-		where T: PartialOrd<T_> {
+	/// Searches for a node with the given key in the tree and returns a reference.
+	/// `key` is the key to find.
+	fn get_node(&self, key: &K) -> Option<&'static BinaryTreeNode<K, V>> {
 		let mut node = self.get_root();
 
 		while node.is_some() {
 			let n = node.unwrap();
-			let ord = n.value.partial_cmp(&val).unwrap().reverse();
-			if ord == Ordering::Less {
-				node = n.get_left();
-			} else if ord == Ordering::Greater {
-				node = n.get_right();
-			} else {
-				return Some(n);
+			let ord = n.key.partial_cmp(key).unwrap().reverse();
+
+			match ord {
+				Ordering::Less => node = n.get_left(),
+				Ordering::Greater => node = n.get_right(),
+				Ordering::Equal => return Some(n),
 			}
 		}
 
 		None
 	}
 
-	/// Searches for a node with the given value in the tree and returns a mutable reference.
-	/// `val` is the value to find.
-	fn get_mut_node<T_: 'static>(&mut self, val: T_) -> Option::<&mut BinaryTreeNode::<T>>
-		where T: PartialOrd<T_> {
+	/// Searches for a node with the given key in the tree and returns a mutable reference.
+	/// `key` is the key to find.
+	fn get_mut_node(&mut self, key: &K) -> Option<&'static mut BinaryTreeNode<K, V>> {
 		let mut node = self.get_root_mut();
 
 		while node.is_some() {
 			let n = node.unwrap();
-			let ord = n.value.partial_cmp(&val).unwrap().reverse();
-			if ord == Ordering::Less {
-				node = n.get_left_mut();
-			} else if ord == Ordering::Greater {
-				node = n.get_right_mut();
-			} else {
-				return Some(n);
+			let ord = n.key.partial_cmp(key).unwrap().reverse();
+
+			match ord {
+				Ordering::Less => node = n.get_left_mut(),
+				Ordering::Greater => node = n.get_right_mut(),
+				Ordering::Equal => return Some(n),
 			}
 		}
 
 		None
 	}
 
-	/// Searches for the given value in the tree and returns a reference.
-	/// `val` is the value to find.
-	pub fn get<T_: 'static>(&self, val: T_) -> Option::<&T> where T: PartialOrd<T_> {
-		if let Some(n) = self.get_node(val) {
-			Some(&n.value)
-		} else {
-			None
-		}
+	/// Searches for the given key in the tree and returns a reference.
+	/// `key` is the key to find.
+	#[inline]
+	pub fn get<'a>(&'a self, key: K) -> Option<&'a V> {
+		let node = self.get_node(&key)?;
+		Some(&node.value)
 	}
 
-	/// Searches for the given value in the tree and returns a mutable reference.
-	/// `val` is the value to find.
-	pub fn get_mut<T_: 'static>(&mut self, val: T_) -> Option::<&mut T> where T: PartialOrd<T_> {
-		if let Some(n) = self.get_mut_node(val) {
-			Some(&mut n.value)
-		} else {
-			None
-		}
+	/// Searches for the given key in the tree and returns a mutable reference.
+	/// `key` is the key to find.
+	#[inline]
+	pub fn get_mut<'a>(&'a mut self, key: K) -> Option<&'a mut V> {
+		let node = self.get_mut_node(&key)?;
+		Some(&mut node.value)
 	}
 
 	/// Searches for a node in the tree using the given comparison function `cmp` instead of the
 	/// Ord trait.
-	pub fn cmp_get<F: Fn(&T) -> Ordering>(&mut self, cmp: F) -> Option::<&mut T> {
-		let mut node = self.get_root_mut();
+	pub fn cmp_get<'a, F: Fn(&K, &V) -> Ordering>(&'a self, cmp: F) -> Option<&'a V> {
+		let mut node = self.get_root();
 
 		while node.is_some() {
 			let n = node.unwrap();
-			let ord = cmp(&n.value).reverse();
-			if ord == Ordering::Less {
-				node = n.get_left_mut();
-			} else if ord == Ordering::Greater {
-				node = n.get_right_mut();
-			} else {
-				return Some(&mut n.value);
+			let ord = cmp(&n.key, &n.value);
+
+			match ord {
+				Ordering::Less => node = n.get_left(),
+				Ordering::Greater => node = n.get_right(),
+				Ordering::Equal => return Some(&n.value),
 			}
 		}
 
 		None
 	}
 
-	/// Searches in the tree for a value greater or equal to the given value.
-	/// `val` is the value to find.
-	pub fn get_min<T_: 'static>(&mut self, val: T_) -> Option::<&mut T> where T: PartialOrd<T_> {
+	/// Searches for a node in the tree using the given comparison function `cmp` instead of the
+	/// Ord trait and returns a mutable reference.
+	pub fn cmp_get_mut<'a, F: Fn(&K, &V) -> Ordering>(&'a mut self, cmp: F) -> Option<&'a mut V> {
 		let mut node = self.get_root_mut();
 
 		while node.is_some() {
 			let n = node.unwrap();
-			let ord = n.value.partial_cmp(&val).unwrap().reverse();
+			let ord = cmp(&n.key, &n.value);
+
+			match ord {
+				Ordering::Less => node = n.get_left_mut(),
+				Ordering::Greater => node = n.get_right_mut(),
+				Ordering::Equal => return Some(&mut n.value),
+			}
+		}
+
+		None
+	}
+
+	/// Searches in the tree for a key greater or equal to the given key.
+	/// `key` is the key to find.
+	pub fn get_min<'a>(&'a self, key: K) -> Option<(&'a K, &'a V)> {
+		let mut node = self.get_root();
+
+		while node.is_some() {
+			let n = node.unwrap();
+			let ord = n.key.partial_cmp(&key).unwrap().reverse();
+
 			if ord == Ordering::Greater {
-				node = n.get_right_mut();
+				node = n.get_right();
 			} else {
-				return Some(&mut n.value);
+				return Some((&n.key, &n.value));
 			}
 		}
 
@@ -545,34 +615,37 @@ impl<T: 'static + Ord> BinaryTree<T> {
 
 	/// Updates the root of the tree.
 	/// `node` is a node of the tree.
-	fn update_root(&mut self, node: &mut BinaryTreeNode::<T>) {
-		let mut root = NonNull::new(node as *mut BinaryTreeNode::<T>);
+	fn update_root(&mut self, node: &mut BinaryTreeNode<K, V>) {
+		let mut root = NonNull::new(node as *mut BinaryTreeNode<K, V>);
+
 		loop {
 			let parent = unsafe {
 				root.unwrap().as_mut()
 			}.parent;
+
 			if parent.is_none() {
 				break;
 			}
 			root = parent;
 		}
+
 		self.root = root;
 	}
 
-	/// For value insertion, returns the parent node on which the value will be inserted.
-	fn get_insert_node(&mut self, val: &T) -> Option::<&mut BinaryTreeNode::<T>> {
+	/// For node insertion, returns the parent node on which it will be inserted.
+	fn get_insert_node(&mut self, key: &K) -> Option<&mut BinaryTreeNode<K, V>> {
 		let mut node = self.get_root_mut();
 
 		while node.is_some() {
 			let n = node.unwrap();
-			let ord = val.cmp(&n.value);
-			let next = if ord == Ordering::Less {
-				n.get_left_mut()
-			} else if ord == Ordering::Greater {
-				n.get_right_mut()
-			} else {
-				None
+			let ord = key.cmp(&n.key);
+
+			let next = match ord {
+				Ordering::Less => n.get_left_mut(),
+				Ordering::Greater => n.get_right_mut(),
+				_ => None,
 			};
+
 			if next.is_none() {
 				return Some(n);
 			}
@@ -582,151 +655,344 @@ impl<T: 'static + Ord> BinaryTree<T> {
 		None
 	}
 
-	// TODO Fix
 	/// Equilibrates the tree after insertion of node `n`.
-	fn insert_equilibrate(&mut self, n: &mut BinaryTreeNode::<T>) {
+	fn insert_equilibrate(&mut self, n: &mut BinaryTreeNode<K, V>) {
 		let mut node = n;
-		while let Some(parent) = node.get_parent_mut() {
+
+		if let Some(parent) = node.get_parent_mut() {
 			if parent.is_black() {
-				break;
+				return;
 			}
 
-			let grandparent = parent.get_parent_mut().unwrap();
+			// The node's parent exists and is red
 			if let Some(uncle) = node.get_uncle_mut() {
 				if uncle.is_red() {
+					let grandparent = parent.get_parent_mut().unwrap();
 					parent.color = NodeColor::Black;
 					uncle.color = NodeColor::Black;
 					grandparent.color = NodeColor::Red;
 
-					node = grandparent;
-					continue;
+					self.insert_equilibrate(grandparent);
+					return;
 				}
 			}
 
-			if parent.is_left_child() {
-				if node.is_right_child() {
-					node.left_rotate();
-					node = parent;
+			if node.is_triangle() {
+				if parent.is_right_child() {
+					parent.right_rotate();
+				} else {
+					parent.left_rotate();
 				}
-			} else if node.is_left_child() {
-				node.right_rotate();
+
 				node = parent;
 			}
 
 			let parent = node.get_parent_mut().unwrap();
-			parent.color = NodeColor::Black;
 			let grandparent = parent.get_parent_mut().unwrap();
+
+			if node.is_right_child() {
+				grandparent.left_rotate();
+			} else {
+				grandparent.right_rotate();
+			}
+
+			parent.color = NodeColor::Black;
 			grandparent.color = NodeColor::Red;
+		} else {
+			node.color = NodeColor::Black;
 		}
 	}
 
-	/// Inserts a value in the tree and returns a mutable reference to it.
+	/// Inserts a key/value pair in the tree and returns a mutable reference to the value.
+	/// `key` is the key to insert.
 	/// `val` is the value to insert.
 	/// `cmp` is the comparison function.
-	pub fn insert(&mut self, val: T) -> Result<(), Errno> {
-		let mut node = BinaryTreeNode::new(val)?;
+	pub fn insert<'a>(&'a mut self, key: K, val: V) -> Result<&'a mut V, Errno> {
+		let mut node = BinaryTreeNode::new(key, val)?;
 		let n = unsafe {
 			node.as_mut()
 		};
 
-		if let Some(p) = self.get_insert_node(&n.value) {
-			let order = n.value.cmp(&p.value);
+		if let Some(p) = self.get_insert_node(&n.key) {
+			let order = n.key.cmp(&p.key);
 			if order == Ordering::Less {
 				p.insert_left(n);
 			} else {
 				p.insert_right(n);
 			}
-
-			// TODO self.insert_equilibrate(n);
-			self.update_root(n);
 		} else {
 			debug_assert!(self.root.is_none());
 			self.root = Some(node);
-
-			let n = unsafe {
-				node.as_mut()
-			};
-			// TODO self.insert_equilibrate(n);
-			self.update_root(n);
 		}
-		unsafe {
-			self.root.unwrap().as_mut()
-		}.color = NodeColor::Black;
+		self.insert_equilibrate(n);
+		//#[cfg(config_debug_debug)]
+		//self.check();
+		self.update_root(n);
 
-		#[cfg(config_debug_debug)]
-		self.check();
-		Ok(())
+		Ok(&mut n.value)
+	}
+
+	/// Deletes the node at the given pointer.
+	unsafe fn drop_node(node: &mut BinaryTreeNode<K, V>) {
+		let ptr = node as *mut _ as *mut _;
+		let mut n = ManuallyDrop::new(node);
+		drop_in_place(&mut n.parent);
+		drop_in_place(&mut n.left);
+		drop_in_place(&mut n.right);
+		drop_in_place(&mut n.color);
+		drop_in_place(&mut n.key);
+
+		malloc::free(ptr);
 	}
 
 	/// Returns the leftmost node in the tree.
-	fn get_leftmost_node<T_: 'static>(node: &'static mut BinaryTreeNode::<T>)
-		-> &'static mut BinaryTreeNode::<T> where T: PartialOrd<T_> {
+	fn get_leftmost_node(node: &'static mut BinaryTreeNode<K, V>)
+		-> &'static mut BinaryTreeNode<K, V> {
 		let mut n = node;
+
 		while let Some(left) = n.get_left_mut() {
 			n = left;
 		}
+
 		n
 	}
 
-	// TODO Clean
-	/// Removes a value from the tree. If the value is present several times in the tree, only one
-	/// node is removed.
-	/// `val` is the value to select the node to remove.
-	pub fn remove<T_: 'static>(&mut self, val: T_) where T: PartialOrd<T_> {
-		if let Some(node) = self.get_mut_node(val) {
+	/// Fixes the tree after deletion in the case where the deleted node and its replacement are
+	/// both black.
+	/// `node` is the node to fix.
+	fn remove_fix_double_black(&mut self, node: &mut BinaryTreeNode<K, V>) {
+		if let Some(parent) = node.get_parent_mut() {
+			if let Some(sibling) = node.get_sibling_mut() {
+				if sibling.is_red() {
+					parent.color = NodeColor::Red;
+					sibling.color = NodeColor::Black;
+
+					if sibling.is_left_child() {
+						parent.right_rotate();
+					} else {
+						parent.left_rotate();
+					}
+
+					self.remove_fix_double_black(node);
+				} else {
+					// `sibling` is black
+					let s_left = sibling.get_left_mut();
+					let s_right = sibling.get_right_mut();
+
+					if s_left.is_some() && s_left.as_ref().unwrap().is_red() {
+						let s_left = s_left.unwrap();
+
+						if sibling.is_left_child() {
+							s_left.color = sibling.color;
+							sibling.color = parent.color;
+							parent.right_rotate();
+						} else {
+							s_left.color = parent.color;
+							sibling.right_rotate();
+							parent.left_rotate();
+						}
+
+						parent.color = NodeColor::Black;
+					} else if s_right.is_some() && s_right.as_ref().unwrap().is_red() {
+						let s_right = s_right.unwrap();
+
+						if sibling.is_left_child() {
+							s_right.color = parent.color;
+							sibling.left_rotate();
+							parent.right_rotate();
+						} else {
+							s_right.color = sibling.color;
+							sibling.color = parent.color;
+							parent.left_rotate();
+						}
+
+						parent.color = NodeColor::Black;
+					} else {
+						// `sibling` has two black children
+						sibling.color = NodeColor::Red;
+
+						if parent.is_black() {
+							self.remove_fix_double_black(parent);
+						} else {
+							parent.color = NodeColor::Black;
+						}
+					}
+				}
+			} else {
+				self.remove_fix_double_black(parent);
+			}
+		}
+	}
+
+	/// Removes the given node `node` from the tree.
+	fn remove_node(&mut self, node: &mut BinaryTreeNode<K, V>) {
+		let mut replacement = {
 			let left = node.get_left_mut();
 			let right = node.get_right_mut();
 
-			let replacement: Option::<NonNull::<BinaryTreeNode::<T>>> = {
-				if left.is_some() && right.is_some() {
-					let leftmost = Self::get_leftmost_node::<T_>(right.unwrap());
-					leftmost.unlink();
-					NonNull::new(leftmost as *mut _)
-				} else if let Some(left) = left {
-					NonNull::new(left as *mut _)
-				} else if let Some(right) = right {
-					NonNull::new(right as *mut _)
-				} else {
-					None
-				}
-			};
-
-			if let Some(mut r) = replacement {
-				unsafe {
-					r.as_mut()
-				}.parent = node.parent;
+			if left.is_some() && right.is_some() {
+				// The node has two children
+				// The leftmost node may have a child on the right
+				Some(Self::get_leftmost_node(right.unwrap()))
+			} else if left.is_some() {
+				// The node has only one child on the left
+				left
+			} else if right.is_some() {
+				// The node has only one child on the right
+				right
+			} else {
+				// The node has no children
+				None
 			}
+		};
+
+		let both_black = node.is_black()
+			&& (replacement.is_none() || replacement.as_ref().unwrap().is_black());
+
+		if replacement.is_none() {
+			if node.get_parent_mut().is_none() {
+				// The node is root and has no children
+				unsafe {
+					debug_assert_eq!(self.root.unwrap().as_mut() as *mut BinaryTreeNode<K, V>,
+						node as *mut _);
+				}
+				self.root = None;
+			} else {
+				if both_black {
+					self.remove_fix_double_black(node);
+					self.update_root(node);
+				} else if let Some(sibling) = node.get_sibling_mut() {
+					sibling.color = NodeColor::Red;
+				}
+
+				node.unlink();
+			}
+
+			unsafe {
+				Self::drop_node(node);
+			}
+		} else if node.get_left().is_none() || node.get_right().is_none() {
+			let replacement = replacement.as_mut().unwrap();
 
 			if let Some(parent) = node.get_parent_mut() {
-				*if node.is_left_child() {
-					&mut parent.left
+				replacement.parent = None;
+				if node.is_left_child() {
+					parent.left = None;
+					parent.insert_left(replacement);
 				} else {
-					&mut parent.right
-				} = replacement;
+					parent.right = None;
+					parent.insert_right(replacement);
+				}
 
 				node.unlink();
 				unsafe {
-					malloc::free(node as *mut _ as *mut _);
+					Self::drop_node(node);
+				}
+
+				if both_black {
+					self.remove_fix_double_black(replacement);
+					self.update_root(replacement);
+				} else {
+					replacement.color = NodeColor::Black;
 				}
 			} else {
-				node.unlink();
+				// The node is the root
+				node.key = unsafe {
+					ptr::read(&replacement.key as _)
+				};
+				node.value = unsafe {
+					ptr::read(&replacement.value as _)
+				};
+
+				node.left = None;
+				node.right = None;
+
+				replacement.unlink();
 				unsafe {
-					malloc::free(node as *mut _ as *mut _);
+					Self::drop_node(replacement);
+				}
+			}
+		} else {
+			let replacement = replacement.as_mut().unwrap();
+			mem::swap(&mut node.key, &mut replacement.key);
+			mem::swap(&mut node.value, &mut replacement.value);
+			self.remove_node(replacement);
+		}
+	}
+
+	/// Removes a value from the tree. If the value is present several times in the tree, only one
+	/// node is removed.
+	/// `key` is the key to select the node to remove.
+	/// If the key exists, the function returns the value of the removed node.
+	pub fn remove(&mut self, key: K) -> Option<V> {
+		let node = self.get_mut_node(&key)?;
+		let value = unsafe {
+			ptr::read(&node.value)
+		};
+
+		self.remove_node(node);
+
+		//#[cfg(config_debug_debug)]
+		//self.check();
+		Some(value)
+	}
+
+	/// Removes a value from the tree. This function is useful when several values have the same
+	/// key since the given closure allows to select the node to remove.
+	/// `key` is the key to select the node to remove.
+	/// `f` the closure that selects the node to be removed. When returning `false`, the closure is
+	/// called with the next node. When returning `true`, the node is removed and the closure isn't
+	/// called anymore.
+	/// If a node is removed, the function returns the value of the removed node.
+	pub fn select_remove<F: FnMut(&V) -> bool>(&mut self, key: K, mut f: F) -> Option<V> {
+		let node = {
+			let mut n = self.get_mut_node(&key)?;
+
+			loop {
+				debug_assert_eq!(n.key.cmp(&key), Ordering::Equal);
+				if f(&n.value) {
+					break;
 				}
 
-				self.root = replacement;
-			}
-		}
+				let left = n.get_left_mut();
+				if left.is_some() && left.as_ref().unwrap().key == key {
+					n = left.unwrap();
+				} else {
+					loop {
+						let right = n.get_right_mut();
+						if right.is_some() && right.as_ref().unwrap().key == key {
+							n = right.unwrap();
+							break;
+						}
 
-		#[cfg(config_debug_debug)]
-		self.check();
+						n = n.get_parent_mut()?;
+						if n.key != key {
+							return None;
+						}
+					}
+
+					break;
+				}
+			}
+
+			n
+		};
+		let value = unsafe {
+			ptr::read(&node.value)
+		};
+
+		self.remove_node(node);
+
+		//#[cfg(config_debug_debug)]
+		//self.check();
+		Some(value)
 	}
 }
 
-impl<T: 'static> BinaryTree::<T> {
+impl<K: 'static + Ord, V: 'static> BinaryTree<K, V> {
 	/// Calls the given closure for every nodes in the subtree with root `root`.
 	/// `traversal_type` defines the order in which the tree is traversed.
-	fn foreach_nodes<F: FnMut(&BinaryTreeNode::<T>)>(root: &BinaryTreeNode::<T>, f: &mut F,
+	fn foreach_nodes<F: FnMut(&BinaryTreeNode<K, V>)>(root: &BinaryTreeNode<K, V>, f: &mut F,
 		traversal_type: TraversalType) {
 		let (first, second) = if traversal_type == TraversalType::ReverseInOrder {
 			(root.right, root.left)
@@ -762,7 +1028,7 @@ impl<T: 'static> BinaryTree::<T> {
 
 	/// Calls the given closure for every nodes in the subtree with root `root`.
 	/// `traversal_type` defines the order in which the tree is traversed.
-	fn foreach_nodes_mut<F: FnMut(&mut BinaryTreeNode::<T>)>(root: &mut BinaryTreeNode::<T>,
+	fn foreach_nodes_mut<F: FnMut(&mut BinaryTreeNode<K, V>)>(root: &mut BinaryTreeNode<K, V>,
 		f: &mut F, traversal_type: TraversalType) {
 		let (first, second) = if traversal_type == TraversalType::ReverseInOrder {
 			(root.right, root.left)
@@ -797,23 +1063,23 @@ impl<T: 'static> BinaryTree::<T> {
 	}
 
 	/// Calls the given closure for every values.
-	pub fn foreach<F: FnMut(&T)>(&self, mut f: F, traversal_type: TraversalType) {
+	pub fn foreach<F: FnMut(&K, &V)>(&self, mut f: F, traversal_type: TraversalType) {
 		if let Some(n) = self.root {
 			Self::foreach_nodes(unsafe {
 				n.as_ref()
-			}, &mut | n: &BinaryTreeNode::<T> | {
-				f(&n.value);
+			}, &mut | n: &BinaryTreeNode<K, V> | {
+				f(&n.key, &n.value);
 			}, traversal_type);
 		}
 	}
 
 	/// Calls the given closure for every values.
-	pub fn foreach_mut<F: FnMut(&mut T)>(&mut self, mut f: F, traversal_type: TraversalType) {
+	pub fn foreach_mut<F: FnMut(&K, &mut V)>(&mut self, mut f: F, traversal_type: TraversalType) {
 		if let Some(mut n) = self.root {
 			Self::foreach_nodes_mut(unsafe {
 				n.as_mut()
-			}, &mut | n: &mut BinaryTreeNode::<T> | {
-				f(&mut n.value);
+			}, &mut | n: &mut BinaryTreeNode<K, V> | {
+				f(&n.key, &mut n.value);
 			}, traversal_type);
 		}
 	}
@@ -823,47 +1089,71 @@ impl<T: 'static> BinaryTree::<T> {
 	#[cfg(config_debug_debug)]
 	pub fn check(&self) {
 		if let Some(root) = self.root {
+			let mut explored_nodes = Vec::<*const c_void>::new();
+
 			Self::foreach_nodes(unsafe {
 				root.as_ref()
-			}, &mut | n: &BinaryTreeNode::<T> | {
-				if let Some(left) = n.get_left() {
-					debug_assert!(ptr::eq(left.get_parent().unwrap() as *const _, n as *const _));
+			}, &mut | n: &BinaryTreeNode<K, V> | {
+				assert!(n as *const _ as usize >= memory::PROCESS_END as usize);
+
+				for e in explored_nodes.iter() {
+					assert_ne!(*e, n as *const _ as *const c_void);
 				}
+				explored_nodes.push(n as *const _ as *const c_void).unwrap();
+
+				if let Some(left) = n.get_left() {
+					assert!(left as *const _ as usize >= memory::PROCESS_END as usize);
+					assert!(ptr::eq(left.get_parent().unwrap() as *const _, n as *const _));
+					assert!(left.key <= n.key);
+				}
+
 				if let Some(right) = n.get_right() {
-					debug_assert!(ptr::eq(right.get_parent().unwrap() as *const _, n as *const _));
+					assert!(right as *const _ as usize >= memory::PROCESS_END as usize);
+					assert!(ptr::eq(right.get_parent().unwrap() as *const _, n as *const _));
+					assert!(right.key >= n.key);
 				}
 			}, TraversalType::PreOrder);
 		}
 	}
 
+	/// Returns an iterator for the current binary tree.
+	pub fn iter(&self) -> BinaryTreeIterator::<K, V> {
+		BinaryTreeIterator::new(self)
+	}
+
 	/// Returns a mutable iterator for the current binary tree.
-	pub fn iter_mut(&mut self) -> BinaryTreeMutIterator::<T> {
+	pub fn iter_mut(&mut self) -> BinaryTreeMutIterator::<K, V> {
 		BinaryTreeMutIterator::new(self)
 	}
 }
 
 /// An iterator for the BinaryTree structure. This iterator traverses the tree in pre order.
-pub struct BinaryTreeIterator<'a, T: 'static> {
+pub struct BinaryTreeIterator<'a, K: 'static + Ord, V: 'static> {
 	/// The binary tree to iterate into.
-	tree: &'a BinaryTree::<T>,
+	tree: &'a BinaryTree::<K, V>,
 	/// The current node of the iterator.
-	node: Option::<NonNull::<BinaryTreeNode::<T>>>,
+	node: Option<NonNull<BinaryTreeNode<K, V>>>,
 }
 
-impl<'a, T> BinaryTreeIterator<'a, T> {
+impl<'a, K: Ord, V> BinaryTreeIterator<'a, K, V> {
 	/// Creates a binary tree iterator for the given reference.
-	fn new(tree: &'a BinaryTree::<T>) -> Self {
+	fn new(tree: &'a BinaryTree::<K, V>) -> Self {
 		BinaryTreeIterator {
 			tree,
 			node: tree.root,
 		}
 	}
+
+	/// Makes the iterator jump to the given key. If the key doesn't exist, the iterator ends.
+	pub fn jump(&mut self, key: &K) {
+		self.node = self.tree.get_node(key).and_then(| v | {
+			NonNull::new(v as *const _ as *mut _)
+		});
+	}
 }
 
-impl<'a, T: Ord> Iterator for BinaryTreeIterator<'a, T> {
-	type Item = &'a T;
-
-	// TODO Implement every functions?
+impl<'a, K: 'static + Ord, V> Iterator for BinaryTreeIterator<'a, K, V> {
+	type Item = (&'a K, &'a V);
 
 	fn next(&mut self) -> Option<Self::Item> {
 		let node = self.node;
@@ -894,20 +1184,20 @@ impl<'a, T: Ord> Iterator for BinaryTreeIterator<'a, T> {
 		};
 
 		if let Some(node) = unwrap_pointer(&node) {
-			Some(&node.value)
+			Some((&node.key, &node.value))
 		} else {
 			None
 		}
 	}
 
 	fn count(self) -> usize {
-		self.tree.nodes_count()
+		self.tree.count()
 	}
 }
 
-impl<'a, T: Ord> IntoIterator for &'a BinaryTree<T> {
-	type Item = &'a T;
-	type IntoIter = BinaryTreeIterator<'a, T>;
+impl<'a, K: 'static + Ord, V> IntoIterator for &'a BinaryTree<K, V> {
+	type Item = (&'a K, &'a V);
+	type IntoIter = BinaryTreeIterator<'a, K, V>;
 
 	fn into_iter(self) -> Self::IntoIter {
 		BinaryTreeIterator::new(&self)
@@ -915,28 +1205,31 @@ impl<'a, T: Ord> IntoIterator for &'a BinaryTree<T> {
 }
 
 /// An iterator for the BinaryTree structure. This iterator traverses the tree in pre order.
-pub struct BinaryTreeMutIterator<'a, T: 'static> {
+pub struct BinaryTreeMutIterator<'a, K: 'static + Ord, V: 'static> {
 	/// The binary tree to iterate into.
-	tree: &'a mut BinaryTree::<T>,
+	tree: &'a mut BinaryTree::<K, V>,
 	/// The current node of the iterator.
-	node: Option::<NonNull::<BinaryTreeNode::<T>>>,
+	node: Option<NonNull<BinaryTreeNode<K, V>>>,
 }
 
-impl<'a, T> BinaryTreeMutIterator<'a, T> {
+impl<'a, K: Ord, V> BinaryTreeMutIterator<'a, K, V> {
 	/// Creates a binary tree iterator for the given reference.
-	fn new(tree: &'a mut BinaryTree::<T>) -> Self {
+	fn new(tree: &'a mut BinaryTree::<K, V>) -> Self {
 		let root = tree.root;
 		BinaryTreeMutIterator {
 			tree,
 			node: root,
 		}
 	}
+
+	/// Makes the iterator jump to the given key. If the key doesn't exist, the iterator ends.
+	pub fn jump(&mut self, key: &K) {
+		self.node = self.tree.get_mut_node(key).and_then(| v | NonNull::new(v));
+	}
 }
 
-impl<'a, T: Ord> Iterator for BinaryTreeMutIterator<'a, T> {
-	type Item = &'a mut T;
-
-	// TODO Implement every functions?
+impl<'a, K: 'static + Ord, V> Iterator for BinaryTreeMutIterator<'a, K, V> {
+	type Item = (&'a K, &'a mut V);
 
 	fn next(&mut self) -> Option<Self::Item> {
 		let mut node = self.node;
@@ -967,33 +1260,34 @@ impl<'a, T: Ord> Iterator for BinaryTreeMutIterator<'a, T> {
 		};
 
 		if let Some(node) = unwrap_pointer_mut(&mut node) {
-			Some(&mut node.value)
+			Some((&node.key, &mut node.value))
 		} else {
 			None
 		}
 	}
 
 	fn count(self) -> usize {
-		self.tree.nodes_count()
+		self.tree.count()
 	}
 }
 
-impl<T: FailableClone + Ord> FailableClone for BinaryTree::<T> {
+impl<K: 'static + FailableClone + Ord, V: FailableClone> FailableClone for BinaryTree<K, V> {
 	fn failable_clone(&self) -> Result<Self, Errno> {
 		let mut new = Self::new();
-		for n in self {
-			new.insert(n.failable_clone()?)?;
+		for (k, v) in self {
+			new.insert(k.failable_clone()?, v.failable_clone()?)?;
 		}
 		Ok(new)
 	}
 }
 
-impl<T: fmt::Display> fmt::Display for BinaryTree::<T> {
+impl<K: 'static + Ord + fmt::Display, V> fmt::Display for BinaryTree<K, V> {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		if let Some(mut n) = self.root {
 			Self::foreach_nodes(unsafe {
 				n.as_mut()
 			}, &mut | n | {
+				// TODO Optimize
 				for _ in 0..n.get_node_depth() {
 					let _ = write!(f, "\t");
 				}
@@ -1003,7 +1297,7 @@ impl<T: fmt::Display> fmt::Display for BinaryTree::<T> {
 				} else {
 					"black"
 				};
-				let _ = writeln!(f, "{} ({})", n.value, color);
+				let _ = writeln!(f, "{} ({})", n.key, color);
 			}, TraversalType::ReverseInOrder);
 			Ok(())
 		} else {
@@ -1012,7 +1306,7 @@ impl<T: fmt::Display> fmt::Display for BinaryTree::<T> {
 	}
 }
 
-impl<T> Drop for BinaryTree::<T> {
+impl<K: 'static + Ord, V> Drop for BinaryTree<K, V> {
 	fn drop(&mut self) {
 		if let Some(mut n) = self.root {
 			Self::foreach_nodes_mut(unsafe {
@@ -1033,24 +1327,24 @@ mod test {
 
 	#[test_case]
 	fn binary_tree0() {
-		let b = BinaryTree::<i32>::new();
+		let b = BinaryTree::<i32, ()>::new();
 		assert!(b.get(0).is_none());
 	}
 
 	#[test_case]
 	fn binary_tree_insert0() {
-		let mut b = BinaryTree::<i32>::new();
+		let mut b = BinaryTree::<i32, i32>::new();
 
-		b.insert(0).unwrap();
+		b.insert(0, 0).unwrap();
 		assert_eq!(*b.get(0).unwrap(), 0);
 	}
 
 	#[test_case]
 	fn binary_tree_insert1() {
-		let mut b = BinaryTree::<i32>::new();
+		let mut b = BinaryTree::<i32, i32>::new();
 
 		for i in 0..10 {
-			b.insert(i).unwrap();
+			b.insert(i, i).unwrap();
 		}
 
 		for i in 0..10 {
@@ -1060,10 +1354,10 @@ mod test {
 
 	#[test_case]
 	fn binary_tree_insert2() {
-		let mut b = BinaryTree::<i32>::new();
+		let mut b = BinaryTree::<i32, i32>::new();
 
 		for i in -9..10 {
-			b.insert(i).unwrap();
+			b.insert(i, i).unwrap();
 		}
 
 		for i in -9..10 {
@@ -1072,17 +1366,41 @@ mod test {
 	}
 
 	#[test_case]
+	fn binary_tree_insert3() {
+		let mut b = BinaryTree::<u32, u32>::new();
+
+		let mut val = 0;
+		for _ in 0..100 {
+			val = crate::util::math::pseudo_rand(val, 1664525, 1013904223, 0x100);
+			b.insert(val, val).unwrap();
+		}
+
+		val = 0;
+		for _ in 0..100 {
+			val = crate::util::math::pseudo_rand(val, 1664525, 1013904223, 0x100);
+			assert_eq!(*b.get(val).unwrap(), val);
+		}
+	}
+
+	#[test_case]
 	fn binary_tree_remove0() {
-		let mut b = BinaryTree::<i32>::new();
+		let mut b = BinaryTree::<i32, i32>::new();
 
 		for i in -9..10 {
-			b.insert(i).unwrap();
+			b.insert(i, i).unwrap();
 		}
 
 		for i in -9..10 {
-			assert_eq!(*b.get(i).unwrap(), i);
+			for i in i..10 {
+				assert_eq!(*b.get(i).unwrap(), i);
+			}
+
 			b.remove(i);
+
 			assert!(b.get(i).is_none());
+			for i in (i + 1)..10 {
+				assert_eq!(*b.get(i).unwrap(), i);
+			}
 		}
 
 		assert!(b.is_empty());
@@ -1090,10 +1408,10 @@ mod test {
 
 	#[test_case]
 	fn binary_tree_remove1() {
-		let mut b = BinaryTree::<i32>::new();
+		let mut b = BinaryTree::<i32, i32>::new();
 
 		for i in -9..10 {
-			b.insert(i).unwrap();
+			b.insert(i, i).unwrap();
 		}
 
 		for i in (-9..10).rev() {
@@ -1107,10 +1425,10 @@ mod test {
 
 	#[test_case]
 	fn binary_tree_remove2() {
-		let mut b = BinaryTree::<i32>::new();
+		let mut b = BinaryTree::<i32, i32>::new();
 
 		for i in (-9..10).rev() {
-			b.insert(i).unwrap();
+			b.insert(i, i).unwrap();
 		}
 
 		for i in (-9..10).rev() {
@@ -1124,15 +1442,15 @@ mod test {
 
 	#[test_case]
 	fn binary_tree_remove3() {
-		let mut b = BinaryTree::<i32>::new();
+		let mut b = BinaryTree::<i32, i32>::new();
 
 		for i in (-9..10).rev() {
-			b.insert(i).unwrap();
+			b.insert(i, i).unwrap();
 		}
 
 		for i in -9..10 {
 			assert_eq!(*b.get(i).unwrap(), i);
-			b.remove(i);
+			assert_eq!(b.remove(i).unwrap(), i);
 			assert!(b.get(i).is_none());
 		}
 
@@ -1141,11 +1459,11 @@ mod test {
 
 	#[test_case]
 	fn binary_tree_remove4() {
-		let mut b = BinaryTree::<i32>::new();
+		let mut b = BinaryTree::<i32, i32>::new();
 
 		for i in -9..10 {
-			b.insert(i).unwrap();
-			b.remove(i);
+			b.insert(i, i).unwrap();
+			assert_eq!(b.remove(i).unwrap(), i);
 		}
 
 		assert!(b.is_empty());
@@ -1153,16 +1471,16 @@ mod test {
 
 	#[test_case]
 	fn binary_tree_remove5() {
-		let mut b = BinaryTree::<i32>::new();
+		let mut b = BinaryTree::<i32, i32>::new();
 
 		for i in -9..10 {
-			b.insert(i).unwrap();
+			b.insert(i, i).unwrap();
 		}
 
 		for i in -9..10 {
 			if i % 2 == 0 {
 				assert_eq!(*b.get(i).unwrap(), i);
-				b.remove(i);
+				assert_eq!(b.remove(i).unwrap(), i);
 				assert!(b.get(i).is_none());
 			}
 		}
@@ -1172,7 +1490,7 @@ mod test {
 		for i in -9..10 {
 			if i % 2 != 0 {
 				assert_eq!(*b.get(i).unwrap(), i);
-				b.remove(i);
+				assert_eq!(b.remove(i).unwrap(), i);
 				assert!(b.get(i).is_none());
 			}
 		}
@@ -1182,75 +1500,76 @@ mod test {
 
 	#[test_case]
 	fn binary_tree_get_min0() {
-		let mut b = BinaryTree::<i32>::new();
+		let b = BinaryTree::<i32, i32>::new();
 		assert!(b.get_min(0).is_none());
 	}
 
 	#[test_case]
 	fn binary_tree_get_min1() {
-		let mut b = BinaryTree::<i32>::new();
-		b.insert(0).unwrap();
-		assert!(*b.get_min(0).unwrap() >= 0);
+		let mut b = BinaryTree::<i32, i32>::new();
+		b.insert(0, 0).unwrap();
+		assert!(*b.get_min(0).unwrap().0 >= 0);
 	}
 
 	#[test_case]
 	fn binary_tree_get_min2() {
-		let mut b = BinaryTree::<i32>::new();
-		b.insert(0).unwrap();
+		let mut b = BinaryTree::<i32, i32>::new();
+		b.insert(0, 0).unwrap();
 		assert!(b.get_min(1).is_none());
 	}
 
 	#[test_case]
 	fn binary_tree_get_min3() {
-		let mut b = BinaryTree::<i32>::new();
-		b.insert(-1).unwrap();
-		b.insert(0).unwrap();
-		b.insert(1).unwrap();
-		assert!(*b.get_min(0).unwrap() >= 0);
+		let mut b = BinaryTree::<i32, i32>::new();
+		b.insert(-1, -1).unwrap();
+		b.insert(0, 0).unwrap();
+		b.insert(1, 1).unwrap();
+		assert!(*b.get_min(0).unwrap().0 >= 0);
 	}
 
 	#[test_case]
 	fn binary_tree_get_min4() {
-		let mut b = BinaryTree::<i32>::new();
-		b.insert(0).unwrap();
-		b.insert(1).unwrap();
-		assert!(*b.get_min(0).unwrap() >= 0);
+		let mut b = BinaryTree::<i32, i32>::new();
+		b.insert(0, 0).unwrap();
+		b.insert(1, 1).unwrap();
+		assert!(*b.get_min(0).unwrap().0 >= 0);
 	}
 
 	#[test_case]
 	fn binary_tree_get_min5() {
-		let mut b = BinaryTree::<i32>::new();
-		b.insert(1).unwrap();
-		assert!(*b.get_min(0).unwrap() >= 0);
+		let mut b = BinaryTree::<i32, i32>::new();
+		b.insert(1, 1).unwrap();
+		assert!(*b.get_min(0).unwrap().0 >= 0);
 	}
 
 	#[test_case]
 	fn binary_tree_get_min6() {
-		let mut b = BinaryTree::<i32>::new();
-		b.insert(-1).unwrap();
-		b.insert(1).unwrap();
-		assert!(*b.get_min(0).unwrap() >= 0);
+		let mut b = BinaryTree::<i32, i32>::new();
+		b.insert(-1, -1).unwrap();
+		b.insert(1, 1).unwrap();
+		assert!(*b.get_min(0).unwrap().0 >= 0);
 	}
 
 	#[test_case]
 	fn binary_tree_foreach0() {
-		let b = BinaryTree::<i32>::new();
-		b.foreach(| _ | {
+		let b = BinaryTree::<i32, i32>::new();
+		b.foreach(| _, _ | {
 			assert!(false);
 		}, TraversalType::PreOrder);
 	}
 
 	#[test_case]
 	fn binary_tree_foreach1() {
-		let mut b = BinaryTree::<i32>::new();
-		b.insert(0).unwrap();
+		let mut b = BinaryTree::<i32, i32>::new();
+		b.insert(0, 0).unwrap();
 
 		let mut passed = false;
-		b.foreach(| val | {
-			assert_eq!(passed, false);
-			assert_eq!(*val, 0);
+		b.foreach(| key, _ | {
+			assert!(!passed);
+			assert_eq!(*key, 0);
 			passed = true;
 		}, TraversalType::PreOrder);
+		assert!(passed);
 	}
 
 	// TODO More foreach tests

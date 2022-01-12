@@ -14,7 +14,7 @@ use core::mem::size_of;
 use crate::errno::Errno;
 use crate::errno;
 use crate::memory;
-use crate::util::lock::mutex::*;
+use crate::util::lock::*;
 use crate::util::math;
 use crate::util;
 
@@ -25,27 +25,19 @@ pub type Flags = i32;
 /// Type representing the identifier of a frame.
 type FrameID = u32;
 
-/// The number of memory zones.
-pub const ZONES_COUNT: usize = 3;
-
 /// The maximum order of a buddy allocated frame.
 pub const MAX_ORDER: FrameOrder = 17;
 
+/// The number of memory zones.
+pub const ZONES_COUNT: usize = 3;
 /// The mask for the type of the zone in buddy allocator flags.
 const ZONE_TYPE_MASK: Flags = 0b11;
 /// Buddy allocator flag. Tells that the allocated frame must be mapped into the user zone.
-pub const FLAG_ZONE_TYPE_USER: Flags = 0b000;
+pub const FLAG_ZONE_TYPE_USER: Flags = 0b00;
 /// Buddy allocator flag. Tells that the allocated frame must be mapped into the kernel zone.
-pub const FLAG_ZONE_TYPE_KERNEL: Flags = 0b001;
-/// Buddy allocator flag. Tells that the allocated frame must be mapped into the DMA zone.
-pub const FLAG_ZONE_TYPE_DMA: Flags = 0b010;
-/// Buddy allocator flag. Tells that the allocation shall not fail (unless not enough memory is
-/// present on the system). This flag is ignored if FLAG_USER is not specified or if the allocation
-/// order is higher than 0. The allocator shall use the OOM killer to recover memory.
-pub const FLAG_NOFAIL: Flags = 0b100; // TODO Move OOM killer outside?
-
-/// Pointer to the end of the kernel zone of memory with the maximum possible size.
-pub const KERNEL_ZONE_LIMIT: *const c_void = 0x40000000 as _;
+pub const FLAG_ZONE_TYPE_MMIO: Flags = 0b01;
+/// Buddy allocator flag. Tells that the allocated frame must be mapped into the MMIO zone.
+pub const FLAG_ZONE_TYPE_KERNEL: Flags = 0b10;
 
 /// Value indicating that the frame is used.
 pub const FRAME_STATE_USED: FrameID = !0_u32;
@@ -84,13 +76,11 @@ struct Frame {
 }
 
 /// The array of buddy allocator zones.
-static mut ZONES: MaybeUninit<[Mutex<Zone>; ZONES_COUNT]> = MaybeUninit::uninit();
+static mut ZONES: MaybeUninit<[IntMutex<Zone>; ZONES_COUNT]> = MaybeUninit::uninit();
 
 /// Prepares the buddy allocator. Calling this function is required before setting the zone slots.
-pub fn prepare() {
-	unsafe {
-		util::zero_object(&mut ZONES);
-	}
+pub unsafe fn prepare() {
+	util::zero_object(&mut ZONES);
 }
 
 /// Sets the zone at the given slot `slot`. It is required to call function `prepare` once before
@@ -101,16 +91,19 @@ pub fn set_zone_slot(slot: usize, zone: Zone) {
 	let z = unsafe {
 		ZONES.assume_init_mut()
 	};
+
 	debug_assert!(slot < z.len());
-	z[slot] = Mutex::new(zone);
+	z[slot] = IntMutex::new(zone);
 }
 
 /// The size in bytes of a frame allocated by the buddy allocator with the given `order`.
+#[inline(always)]
 pub fn get_frame_size(order: FrameOrder) -> usize {
 	memory::PAGE_SIZE << order
 }
 
 /// Returns the size of the metadata for one frame.
+#[inline(always)]
 pub const fn get_frame_metadata_size() -> usize {
 	size_of::<Frame>()
 }
@@ -118,17 +111,16 @@ pub const fn get_frame_metadata_size() -> usize {
 /// Returns the buddy order required to fit the given number of pages.
 pub fn get_order(pages: usize) -> FrameOrder {
 	let mut order: FrameOrder = 0;
-	let mut i = 1;
 
-	while i < pages {
-		i *= 2;
+	while (1 << order) < pages {
 		order += 1;
 	}
+
 	order
 }
 
 /// Returns a mutable reference to a zone suitable for an allocation with the given type `type_`.
-fn get_suitable_zone(type_: usize) -> Option<&'static mut Mutex<Zone>> {
+fn get_suitable_zone(type_: usize) -> Option<&'static mut IntMutex<Zone>> {
 	let zones = unsafe {
 		ZONES.assume_init_mut()
 	};
@@ -136,7 +128,7 @@ fn get_suitable_zone(type_: usize) -> Option<&'static mut Mutex<Zone>> {
 	#[allow(clippy::needless_range_loop)]
 	for i in 0..zones.len() {
 		let is_valid = {
-			let guard = MutexGuard::new(&mut zones[i]);
+			let guard = zones[i].lock();
 			let zone = guard.get();
 			zone.type_ == type_ as _
 		};
@@ -148,7 +140,7 @@ fn get_suitable_zone(type_: usize) -> Option<&'static mut Mutex<Zone>> {
 }
 
 /// Returns a mutable reference to the zone that contains the given pointer.
-fn get_zone_for_pointer(ptr: *const c_void) -> Option<&'static mut Mutex<Zone>> {
+fn get_zone_for_pointer(ptr: *const c_void) -> Option<&'static mut IntMutex<Zone>> {
 	let zones = unsafe {
 		ZONES.assume_init_mut()
 	};
@@ -156,7 +148,7 @@ fn get_zone_for_pointer(ptr: *const c_void) -> Option<&'static mut Mutex<Zone>> 
 	#[allow(clippy::needless_range_loop)]
 	for i in 0..zones.len() {
 		let is_valid = {
-			let guard = MutexGuard::new(&mut zones[i]);
+			let guard = zones[i].lock();
 			let zone = guard.get();
 			ptr >= zone.begin && (ptr as usize) < (zone.begin as usize) + zone.get_size()
 		};
@@ -178,7 +170,7 @@ pub fn alloc(order: FrameOrder, flags: Flags) -> Result<*mut c_void, Errno> {
 		let z = get_suitable_zone(i);
 
 		if let Some(z) = z {
-			let mut guard = MutexGuard::new(z);
+			let mut guard = z.lock();
 			let zone = guard.get_mut();
 
 			let frame = zone.get_available_frame(order);
@@ -189,7 +181,8 @@ pub fn alloc(order: FrameOrder, flags: Flags) -> Result<*mut c_void, Errno> {
 
 				let ptr = f.get_ptr(zone);
 				debug_assert!(util::is_aligned(ptr, memory::PAGE_SIZE));
-				debug_assert!(ptr >= zone.begin && ptr < (zone.begin as usize + zone.get_size()) as _);
+				debug_assert!(ptr >= zone.begin
+					&& ptr < (zone.begin as usize + zone.get_size()) as _);
 				return Ok(ptr);
 			}
 		}
@@ -200,7 +193,11 @@ pub fn alloc(order: FrameOrder, flags: Flags) -> Result<*mut c_void, Errno> {
 /// Calls `alloc` with order `order`. The allocated frame is in the kernel zone.
 /// The function returns the *virtual* address, not the physical one.
 pub fn alloc_kernel(order: FrameOrder) -> Result<*mut c_void, Errno> {
-	Ok(memory::kern_to_virt(alloc(order, FLAG_ZONE_TYPE_KERNEL)?) as _)
+	let ptr = alloc(order, FLAG_ZONE_TYPE_KERNEL)?;
+	let virt_ptr = memory::kern_to_virt(ptr) as _;
+	debug_assert!(virt_ptr as *const _ >= memory::PROCESS_END);
+
+	Ok(virt_ptr)
 }
 
 /// Frees the given memory frame that was allocated using the buddy allocator. The given order must
@@ -210,7 +207,7 @@ pub fn free(ptr: *const c_void, order: FrameOrder) {
 	debug_assert!(order <= MAX_ORDER);
 
 	let z = get_zone_for_pointer(ptr).unwrap();
-	let mut guard = MutexGuard::new(z);
+	let mut guard = z.lock();
 	let zone = guard.get_mut();
 
 	let frame_id = zone.get_frame_id_from_ptr(ptr);
@@ -238,7 +235,7 @@ pub fn allocated_pages_count() -> usize {
 	};
 	#[allow(clippy::needless_range_loop)]
 	for i in 0..z.len() {
-		let guard = MutexGuard::new(&mut z[i]);
+		let guard = z[i].lock();
 		n += guard.get().get_allocated_pages();
 	}
 	n
@@ -751,6 +748,4 @@ mod test {
 
 		debug_assert_eq!(allocated_pages_count(), alloc_pages);
 	}
-
-	// TODO Add more tests
 }

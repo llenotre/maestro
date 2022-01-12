@@ -57,25 +57,29 @@ impl Bitfield {
 	pub fn set(&mut self, index: usize) {
 		debug_assert!(index < self.len);
 
-		let unit = &mut self.data[(index / bit_size_of::<u8>()) as _];
-		*unit |= 1 << (index % bit_size_of::<u8>());
+		if !self.is_set(index) {
+			let unit = &mut self.data[(index / bit_size_of::<u8>()) as _];
+			*unit |= 1 << (index % bit_size_of::<u8>());
 
-		self.set_count += 1;
+			self.set_count += 1;
+		}
 	}
 
 	/// Clears bit `index`.
 	pub fn clear(&mut self, index: usize) {
 		debug_assert!(index < self.len);
 
-		let unit = &mut self.data[(index / bit_size_of::<u8>()) as _];
-		*unit &= !(1 << (index % bit_size_of::<u8>()));
+		if self.is_set(index) {
+			let unit = &mut self.data[(index / bit_size_of::<u8>()) as _];
+			*unit &= !(1 << (index % bit_size_of::<u8>()));
 
-		self.set_count -= 1;
+			self.set_count -= 1;
+		}
 	}
 
 	/// Finds a clear bit. The function returns the offset to the bit. If none is found, the
 	/// function returns None.
-	pub fn find_clear(&mut self) -> Option<usize> {
+	pub fn find_clear(&self) -> Option<usize> {
 		for i in 0..self.len {
 			if !self.is_set(i) {
 				return Some(i);
@@ -85,8 +89,32 @@ impl Bitfield {
 		None
 	}
 
-	// TODO set_all
-	// TODO clear_all
+	/// Finds a set bit. The function returns the offset to the bit. If none is found, the function
+	/// returns None.
+	pub fn find_set(&self) -> Option<usize> {
+		for i in 0..self.len {
+			if self.is_set(i) {
+				return Some(i);
+			}
+		}
+
+		None
+	}
+
+	/// Clears every elements in the bitfield.
+	pub fn clear_all(&mut self) {
+		for i in 0..self.data.len() {
+			self.data[i] = 0;
+		}
+	}
+
+	/// Clears every elements in the bitfield.
+	pub fn set_all(&mut self) {
+		for i in 0..self.data.len() {
+			self.data[i] = !0;
+		}
+	}
+
 	// TODO fill
 }
 

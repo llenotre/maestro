@@ -2,11 +2,11 @@
  * This file implements functions related to the CPUID instruction (x86).
  */
 
+.global cpuid_has_sse
+.global get_current_apic
 .global msr_exist
 .global msr_read
 .global msr_write
-
-.global get_current_apic
 
 .section .text
 
@@ -70,5 +70,21 @@ get_current_apic:
 	shr $24, %ebx
 
 	mov %ebx, %eax
+
+	pop %ebx
+	ret
+
+/*
+ * Tells whether the CPU has SSE.
+ */
+cpuid_has_sse:
+	push %ebx
+
+	mov $0x1, %eax
+	cpuid
+	shr $25, %edx
+	and $0x1, %edx
+	mov %edx, %eax
+
 	pop %ebx
 	ret

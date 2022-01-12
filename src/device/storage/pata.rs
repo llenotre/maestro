@@ -12,6 +12,8 @@
 //!
 //! TODO
 
+// TODO Add support for third and fourth bus
+
 use crate::errno::Errno;
 use crate::errno;
 use crate::io;
@@ -28,9 +30,9 @@ const PRIMARY_ALTERNATE_STATUS_PORT: u16 = 0x3f6;
 /// The beginning of the port range for the secondary ATA bus.
 const SECONDARY_ATA_BUS_PORT_BEGIN: u16 = 0x170;
 /// The port for the secondary disk's device control register.
-const SECONDARY_DEVICE_CONTROL_PORT: u16 = 0x3e6; // TODO Check
+const SECONDARY_DEVICE_CONTROL_PORT: u16 = 0x376;
 /// The port for the secondary disk's alternate status register.
-const SECONDARY_ALTERNATE_STATUS_PORT: u16 = 0x3e6; // TODO Check
+const SECONDARY_ALTERNATE_STATUS_PORT: u16 = 0x376;
 
 /// Offset to the data register.
 const DATA_REGISTER_OFFSET: u16 = 0;
@@ -368,8 +370,8 @@ impl PATAInterface {
 			if (status & STATUS_BSY == 0) && (status & STATUS_DRQ != 0) {
 				return Ok(());
 			}
-			if (status & STATUS_ERR != 0) && (status & STATUS_DF != 0) {
-				return Err(errno::EINVAL); // TODO Set correct errno
+			if (status & STATUS_ERR != 0) || (status & STATUS_DF != 0) {
+				return Err(errno::EIO);
 			}
 		}
 	}
@@ -493,7 +495,7 @@ impl StorageInterface for PATAInterface {
 		self.sectors_count
 	}
 
-	fn read(&mut self, buf: &mut [u8], offset: u64, size: u64) -> Result<(), Errno> {
+	fn read(&self, buf: &mut [u8], offset: u64, size: u64) -> Result<(), Errno> {
 		if offset >= self.sectors_count || offset + size >= self.sectors_count {
 			return Err(errno::EINVAL);
 		}

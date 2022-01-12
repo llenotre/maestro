@@ -4,29 +4,23 @@
 
 use core::cmp::min;
 use crate::tty;
-use crate::util::lock::mutex::Mutex;
-use crate::util::lock::mutex::MutexGuard;
+use crate::util::lock::IntMutex;
 
 /// The size of the kernel logs buffer in bytes.
 const LOGS_SIZE: usize = 1048576;
 
 /// The kernel's logger.
-static mut LOGGER: Mutex<Logger> = Mutex::new(Logger::new());
+static LOGGER: IntMutex<Logger> = IntMutex::new(Logger::new());
 
 /// Tells whether the logger must be silent.
 pub fn set_silent(silent: bool) {
-	let mutex = unsafe { // Safe because using Mutex
-		&mut LOGGER
-	};
-	let mut guard = MutexGuard::new(mutex);
+	let mut guard = LOGGER.lock();
 	guard.get_mut().set_silent(silent);
 }
 
 /// Returns a mutable reference to the logger's Mutex.
-pub fn get() -> &'static mut Mutex<Logger> {
-	unsafe { // Safe because using Mutex
-		&mut LOGGER
-	}
+pub fn get() -> &'static IntMutex<Logger> {
+	&LOGGER
 }
 
 /// Kernel logger, used to print/store kernel logs.
@@ -130,7 +124,7 @@ impl Logger {
 impl core::fmt::Write for Logger {
 	fn write_str(&mut self, s: &str) -> Result<(), core::fmt::Error> {
 		if !self.is_silent() {
-			MutexGuard::new(tty::current()).get_mut().write(s.as_bytes());
+			tty::current().lock().get_mut().write(s.as_bytes());
 		}
 		self.push(s.as_bytes());
 
