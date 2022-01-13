@@ -68,11 +68,17 @@ pub fn get() -> Option<Timestamp> {
 }
 
 /// Makes the CPU wait for at least `n` milliseconds.
-pub fn mdelay(_n: u32) {
+pub fn mdelay(n: u32) {
 	// TODO
+	udelay(n * 1000);
 }
 
 /// Makes the CPU wait for at least `n` microseconds.
-pub fn udelay(_n: u32) {
+pub fn udelay(n: u32) {
 	// TODO
+	for _ in 0..(n * 100) {
+		unsafe {
+			core::arch::asm!("nop");
+		}
+	}
 }

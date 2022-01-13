@@ -65,7 +65,9 @@ pub unsafe fn get_register(offset: usize) -> *mut u32 {
 pub fn wait_delivery() {
 	unsafe { // Safe because the register offset is valid
 		let icr0 = get_register(REG_OFFSET_ICR0);
-		while ptr::read_volatile(icr0) & (1 << 12) != 0 {}
+		while ptr::read_volatile(icr0) & (1 << 12) != 0 {
+			// TODO pause
+		}
 	}
 }
 

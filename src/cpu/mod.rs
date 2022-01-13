@@ -24,8 +24,6 @@ use crate::util::lock::Mutex;
 
 /// The physical address to the destination of the trampoline.
 const TRAMPOLINE_PTR: *mut c_void = 0x8000 as *mut c_void;
-/// The size of the trampoline code in bytes. This value can be a bit larger than required.
-const TRAMPOLINE_SIZE: usize = memory::PAGE_SIZE;
 /// The size of a core's startup stack.
 const CORE_STACK_SIZE: usize = memory::PAGE_SIZE * 8;
 
@@ -33,9 +31,12 @@ extern "C" {
 	/// TODO doc
 	fn get_current_apic() -> u32;
 
-	/// TODO doc
+	/// The symbol of the CPU's startup trampoline.
 	fn cpu_trampoline();
-	/// TODO doc
+	/// The symbol at the end of the trampoline.
+	static trampoline_end: c_void;
+
+	/// The pointer to the trampoline stacks.
 	static mut trampoline_stacks: u32;
 
 	/// Tells whether the CPU has SSE.
@@ -238,10 +239,13 @@ fn prepare_trampoline(cores_count: usize) -> Result<(), Errno> {
 		transmute::<unsafe extern "C" fn(), *const c_void>(cpu_trampoline)
 	};
 	let dest = memory::kern_to_virt(TRAMPOLINE_PTR) as _;
+	let size = unsafe {
+		&trampoline_end as *const _ as usize
+	} - src as usize;
 
 	unsafe {
 		vmem::write_lock_wrap(|| {
-			ptr::copy_nonoverlapping(src, dest, TRAMPOLINE_SIZE);
+			ptr::copy_nonoverlapping(src, dest, size);
 
 			// TODO Free when every cores are ready?
 			trampoline_stacks = stacks as u32;

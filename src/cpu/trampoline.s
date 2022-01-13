@@ -11,6 +11,7 @@
 
 .global cpu_trampoline
 .global trampoline_stacks
+.global trampoline_end
 
 .extern cpu_startup
 
@@ -22,7 +23,7 @@ cpu_trampoline:
 	cli
 	cld
 
-	lgdt GDT_DESC_PHYS_PTR
+	lgdt (TRAMPOLINE_OFFSET + (trampoline_gdt - cpu_trampoline))
 	mov %cr0, %eax
 	or $1, %al
 	mov %eax, %cr0
@@ -36,7 +37,6 @@ trampoline_complete_flush:
 	mov %ax, %gs
 	mov %ax, %ss
 
-	hlt # TODO rm
 	# Getting the CPU core id
 	mov $1, %eax
 	cpuid
@@ -54,9 +54,47 @@ trampoline_complete_flush:
 	# TODO Remap vmem
 
 	add $0xc0000000, %esp
-	jmp cpu_startup
+	call cpu_startup
+
+/*
+ * The beginning of the trampline GDT.
+ * This GDT is used temporarily when starting a new core.
+ */
+trampoline_gdt_start:
+	.quad 0
+
+/*
+ * Segment for the kernel code.
+ */
+trampoline_gdt_code:
+	.word 0xffff
+	.word 0
+	.byte 0
+	.byte 0b10011010
+	.byte 0b11001111
+	.byte 0
+
+/*
+ * Segment for the kernel data.
+ */
+trampoline_gdt_data:
+	.word 0xffff
+	.word 0
+	.byte 0
+	.byte 0b10010010
+	.byte 0b11001111
+	.byte 0
+
+/*
+ * The trampoline GDT descriptor.
+ */
+trampoline_gdt:
+	.word trampoline_gdt - trampoline_gdt_start - 1
+	.long trampoline_gdt_start - cpu_trampoline
 
 # A physical address to an array containing pointers to stacks for each cores
-.align 8
 trampoline_stacks:
 	.skip 4
+
+# The trampoline's end. Used to measure the size of the data to copy
+trampoline_end:
