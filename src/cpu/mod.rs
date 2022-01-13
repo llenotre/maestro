@@ -12,6 +12,7 @@ pub mod sse;
 use core::ffi::c_void;
 use core::mem::size_of;
 use core::mem::transmute;
+use core::ptr::NonNull;
 use core::ptr;
 use crate::errno::Errno;
 use crate::memory::malloc;
@@ -29,9 +30,12 @@ const TRAMPOLINE_SIZE: usize = memory::PAGE_SIZE;
 const CORE_STACK_SIZE: usize = memory::PAGE_SIZE * 8;
 
 extern "C" {
+	/// TODO doc
 	fn get_current_apic() -> u32;
 
+	/// TODO doc
 	fn cpu_trampoline();
+	/// TODO doc
 	static mut trampoline_stacks: u32;
 
 	/// Tells whether the CPU has SSE.
@@ -90,7 +94,7 @@ pub struct CPU {
 	/// The APIC ID.
 	apic_id: u32,
 	/// The I/O APIC address.
-	io_apic_addr: Option<*mut u32>,
+	io_apic_addr: Option<NonNull<u32>>,
 
 	/// CPU flags.
 	flags: u32,
@@ -119,12 +123,12 @@ impl CPU {
 	}
 
 	/// Returns the I/O APIC physical address.
-	pub fn get_io_apic_addr(&self) -> Option<*mut u32> {
+	pub fn get_io_apic_addr(&self) -> Option<NonNull<u32>> {
 		self.io_apic_addr
 	}
 
 	/// Sets the I/O APIC physical address.
-	pub fn set_io_apic_addr(&mut self, addr: Option<*mut u32>) {
+	pub fn set_io_apic_addr(&mut self, addr: Option<NonNull<u32>>) {
 		self.io_apic_addr = addr;
 	}
 
@@ -174,13 +178,11 @@ impl CPU {
 }
 
 /// The list of CPUs on the system.
-static mut CPUS: Mutex<Vec<Mutex<CPU>>> = Mutex::new(Vec::new());
+static CPUS: Mutex<Vec<Mutex<CPU>>> = Mutex::new(Vec::new());
 
 /// Returns the number of CPUs on the system.
 pub fn get_count() -> usize {
-	unsafe { // Safe because using Mutex
-		CPUS.lock().get().len()
-	}
+	CPUS.lock().get().len()
 }
 
 // TODO Return a dynamicaly associated ID instead to ensure that the IDs are linear
@@ -193,16 +195,12 @@ pub fn get_current() -> u32 {
 
 /// Adds a new core to the core list.
 pub fn add_core(cpu: CPU) -> Result<(), Errno> {
-	unsafe { // Safe because using Mutex
-		CPUS.lock().get_mut().push(Mutex::new(cpu))
-	}
+	CPUS.lock().get_mut().push(Mutex::new(cpu))
 }
 
-/// Returns a mutable reference to the CPUs list's Mutex.
-pub fn list() -> &'static mut Mutex<Vec<Mutex<CPU>>> {
-	unsafe {
-		&mut CPUS
-	}
+/// Returns a reference to the CPUs list's Mutex.
+pub fn list() -> &'static Mutex<Vec<Mutex<CPU>>> {
+	&CPUS
 }
 
 /// Copies the trampoline code to its destination address to ensure it is accessible from real mode
@@ -259,27 +257,30 @@ fn prepare_trampoline(cores_count: usize) -> Result<(), Errno> {
 /// This function must be called **only once, at boot**.
 pub fn init_multicore() {
 	let curr_id = get_current();
-	let mut cores_guard = unsafe { // Safe because using Mutex
-		CPUS.lock()
-	};
+	let mut cores_guard = CPUS.lock();
 	let cores = cores_guard.get_mut();
 	let cores_count = cores.len();
 
-	if cores_count > 1 {
-		pic::disable();
-		apic::enable();
+	// If there is not multiple cores, the function does nothing
+	if cores_count <= 1 {
+		return;
+	}
 
-		if prepare_trampoline(cores_count).is_err() {
-			crate::kernel_panic!("Failed to initialize multicore");
-		}
+	// Using APIC instead of PIC
+	pic::disable();
+	apic::enable();
 
-		for i in 0..cores_count {
-			let cpu_guard = cores[i].lock();
-			let cpu = cpu_guard.get();
+	// Preparing the trampoline to launch other cores
+	if prepare_trampoline(cores_count).is_err() {
+		crate::kernel_panic!("Failed to initialize multicore");
+	}
 
-			if cpu.apic_id != curr_id && cpu.can_enable() {
-				cpu.enable();
-			}
+	for cpu in cores.iter() {
+		let cpu_guard = cpu.lock();
+		let cpu = cpu_guard.get();
+
+		if cpu.apic_id != curr_id && cpu.can_enable() {
+			cpu.enable();
 		}
 	}
 }

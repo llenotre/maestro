@@ -19,7 +19,6 @@
 # The CPU trampoline
 .align 4096
 cpu_trampoline:
-	jmp cpu_trampoline # TODO rm
 	cli
 	cld
 

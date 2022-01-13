@@ -159,4 +159,4 @@ gdt_tls:
  */
 gdt:
 	.word gdt - gdt_start - 1
-	.long gdt_start
+	.long GDT_PHYS_PTR

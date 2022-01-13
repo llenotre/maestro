@@ -6,9 +6,6 @@ use crate::cpu::msr;
 use crate::memory;
 use crate::util;
 
-/// The APIC's physical address.
-static mut APIC_ADDR: Option<*mut c_void> = None;
-
 /// The offset of the APIC End Of Interrupt register.
 pub const REG_OFFSET_EOI: usize = 0xb0;
 /// The offset of the APIC Spurious Interrupt Vector register.
@@ -19,6 +16,9 @@ pub const REG_OFFSET_ERROR_STATUS: usize = 0x280;
 pub const REG_OFFSET_ICR0: usize = 0x300;
 /// The offset of the APIC Interrupt Command Register register 1.
 pub const REG_OFFSET_ICR1: usize = 0x310;
+
+/// The APIC's physical address.
+static mut APIC_ADDR: Option<*mut c_void> = None;
 
 /// Sets the APIC physical address.
 /// This function is **not** thread-safe.

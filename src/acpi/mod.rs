@@ -7,6 +7,7 @@
 
 use core::ffi::c_void;
 use core::intrinsics::wrapping_add;
+use core::ptr::NonNull;
 use crate::cpu::CPU;
 use crate::cpu;
 use crate::memory::dma::DMA;
@@ -126,10 +127,11 @@ pub fn init() {
 			_ => {},
 		});
 
-		// TODO doc
+		// Set the address to the APIC's registers
 		unsafe {
 			cpu::apic::set_addr(apic_addr as _);
 		}
+		// Creates a DMA for the APIC's registers
 		dma::register(DMA::new(apic_addr, 1, apic_addr)).unwrap(); // TODO Print proper error msg
 
 		// TODO doc
@@ -149,7 +151,7 @@ pub fn init() {
 						let cpu = guard.get_mut();
 
 						if cpu.get_apic_id() == e.io_apic_id as _ {
-							cpu.set_io_apic_addr(Some(e.io_apic_addr as _));
+							cpu.set_io_apic_addr(NonNull::new(e.io_apic_addr as _));
 							break;
 						}
 					}
