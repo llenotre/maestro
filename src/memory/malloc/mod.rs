@@ -10,6 +10,7 @@ use chunk::Chunk;
 use core::cmp::Ordering;
 use core::cmp::min;
 use core::ffi::c_void;
+use core::mem::ManuallyDrop;
 use core::mem::size_of;
 use core::ops::Index;
 use core::ops::IndexMut;
@@ -151,6 +152,38 @@ impl<T> Alloc<T> {
 		Ok(Self {
 			slice,
 		})
+	}
+
+	/// Allocates `size` element in the kernel memory and returns a structure wrapping a slice
+	/// allowing to access it. If the allocation fails, the function shall return an error.
+	/// Each elements are filled by calling the given lambda `f`, whose argument is the index.
+	pub fn new_fill<F>(size: usize, mut f: F) -> Result<Self, Errno>
+		where F: FnMut(usize) -> Result<T, Errno> {
+		let mut alloc = unsafe { // Safe because the elements are initialized after
+			Self::new_zero(size)
+		}?;
+
+		// Filling slice
+		for i in 0..size {
+			match f(i) {
+				Ok(e) => alloc[i] = e,
+
+				Err(e) => {
+					// On error, dropping elements that are already initialized
+					// ManuallyDrop is used to avoid dropping elements that are not yet initialized
+					let mut mdrop = ManuallyDrop::new(alloc);
+					for j in 0..i {
+						unsafe {
+							drop_in_place(&mut mdrop[j]);
+						}
+					}
+
+					return Err(e);
+				},
+			}
+		}
+
+		Ok(alloc)
 	}
 
 	/// Returns an immutable reference to the underlying slice.
