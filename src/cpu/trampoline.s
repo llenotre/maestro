@@ -11,24 +11,34 @@
 
 .global cpu_trampoline
 .global trampoline_stacks
+.global trampoline_vmem
 .global trampoline_end
 
 .extern cpu_startup
 
 .section .text
+.code16
 
 # The CPU trampoline
 .align 4096
 cpu_trampoline:
 	cli
 	cld
+	ljmp $0x0, $(TRAMPOLINE_OFFSET + (trampoline_load_gdt - cpu_trampoline))
 
+trampoline_load_gdt:
+	xor %ax, %ax
+	mov %ax, %ds
 	lgdt (TRAMPOLINE_OFFSET + (trampoline_gdt - cpu_trampoline))
+
 	mov %cr0, %eax
-	or $1, %al
+	or $1, %eax
 	mov %eax, %cr0
 
 	ljmp $0x8, $(TRAMPOLINE_OFFSET + (trampoline_complete_flush - cpu_trampoline))
+
+.code32
+
 trampoline_complete_flush:
 	mov $0x10, %ax
 	mov %ax, %ds
@@ -40,21 +50,30 @@ trampoline_complete_flush:
 	# Getting the CPU core id
 	mov $1, %eax
 	cpuid
-	shr $24, %ebx # TODO Check that the IDs are linear
+	shr $24, %ebx # TODO Ensure the IDs are linear
 
 	# Stack initialization
-	mov $4, %eax
-	mul %ebx
-
+	sub $1, %ebx
+	shl $2, %ebx
 	mov (TRAMPOLINE_OFFSET + (trampoline_stacks - cpu_trampoline)), %eax
 	add %eax, %ebx
 	mov (%ebx), %esp
 
-	# Remapping virtual memory
-	# TODO Remap vmem
+	# Mapping kernel virtual memory
+	mov trampoline_vmem, %eax
+	mov %eax, %cr3
+	mov %cr0, %eax
+	or $0x80010000, %eax
+	mov %eax, %cr0
 
-	add $0xc0000000, %esp
+	# Continue execution
 	call cpu_startup
+	# The function is not supposed to return. If it does, crash
+	ud2
+
+
+
+.align 8
 
 /*
  * The beginning of the trampline GDT.
@@ -90,11 +109,19 @@ trampoline_gdt_data:
  */
 trampoline_gdt:
 	.word trampoline_gdt - trampoline_gdt_start - 1
-	.long trampoline_gdt_start - cpu_trampoline
+	.long TRAMPOLINE_OFFSET + (trampoline_gdt_start - cpu_trampoline)
 
-# A physical address to an array containing pointers to stacks for each cores
+
+
+# The address to the array containing pointers to stacks for each cores
 trampoline_stacks:
 	.skip 4
+
+# The address to the vmem
+trampoline_vmem:
+	.skip 4
+
+
 
 # The trampoline's end. Used to measure the size of the data to copy
 trampoline_end:

@@ -33,11 +33,12 @@ extern "C" {
 
 	/// The symbol of the CPU's startup trampoline.
 	fn cpu_trampoline();
+	/// The pointer to the trampoline stacks.
+	static mut trampoline_stacks: *mut *mut ();
+	/// The pointer to the kernel vmem to use in the trampoline
+	static mut trampoline_vmem: *mut u32;
 	/// The symbol at the end of the trampoline.
 	static trampoline_end: c_void;
-
-	/// The pointer to the trampoline stacks.
-	static mut trampoline_stacks: u32;
 
 	/// Tells whether the CPU has SSE.
 	fn cpuid_has_sse() -> bool;
@@ -209,8 +210,9 @@ pub fn list() -> &'static Mutex<Vec<Mutex<CPU>>> {
 /// The function also allocates stacks for each cores.
 /// `cores_count` is the number of cores on the system.
 fn prepare_trampoline(cores_count: usize) -> Result<(), Errno> {
+	// TODO Clean
 	let stacks = unsafe {
-		malloc::alloc(cores_count * size_of::<u32>())? as *mut u32
+		malloc::alloc(cores_count * size_of::<*mut ()>())? as *mut *mut ()
 	};
 	for i in 0..cores_count {
 		let res = unsafe {
@@ -218,6 +220,7 @@ fn prepare_trampoline(cores_count: usize) -> Result<(), Errno> {
 		};
 
 		if let Ok(ptr) = res {
+			// TODO Write pointer to end of stack
 			unsafe {
 				*stacks.add(i) = ptr as _;
 			}
@@ -245,12 +248,22 @@ fn prepare_trampoline(cores_count: usize) -> Result<(), Errno> {
 
 	unsafe {
 		vmem::write_lock_wrap(|| {
+			// Copying trampoline code
 			ptr::copy_nonoverlapping(src, dest, size);
 
-			// TODO Free when every cores are ready?
-			trampoline_stacks = stacks as u32;
+			// Copying stacks array
+			let trampoline_stacks_ptr = (&mut trampoline_stacks as *mut *mut *mut ())
+				.sub(src as usize).add(dest as usize);
+			*trampoline_stacks_ptr = stacks;
+
+			// Copying kernel vmem pointer
+			let trampoline_vmem_ptr = (&mut trampoline_vmem as *mut *mut u32)
+				.sub(src as usize).add(dest as usize);
+			*trampoline_vmem_ptr = 0x0 as _; // TODO Write vmem
 		});
 	}
+
+	// TODO Free stacks when every cores are ready
 
 	Ok(())
 }
