@@ -2,6 +2,7 @@
 
 use core::cmp::min;
 use core::slice;
+use crate::cpu;
 use crate::errno::Errno;
 use crate::errno;
 use crate::file::file_descriptor::O_NONBLOCK;
@@ -64,6 +65,6 @@ pub fn write(regs: &Regs) -> Result<i32, Errno> {
 		}
 
 		// TODO Mark the process as Sleeping and wake it up when data can be written?
-		crate::wait();
+		cpu::wait();
 	}
 }

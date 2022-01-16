@@ -2,6 +2,7 @@
 
 use core::cmp::min;
 use core::slice;
+use crate::cpu;
 use crate::errno::Errno;
 use crate::errno;
 use crate::file::file_descriptor::O_NONBLOCK;
@@ -56,6 +57,6 @@ pub fn read(regs: &Regs) -> Result<i32, Errno> {
 		}
 
 		// TODO Mark the process as Sleeping and wake it up when data is available?
-		crate::wait();
+		cpu::wait();
 	}
 }

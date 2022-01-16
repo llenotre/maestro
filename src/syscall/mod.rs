@@ -58,6 +58,7 @@ mod write;
 mod writev;
 pub mod util;
 
+use crate::cpu;
 use crate::process::Process;
 use crate::process::signal::Signal;
 use crate::process;
@@ -518,7 +519,7 @@ pub extern "C" fn syscall_handler(regs: &mut Regs) {
 				curr_proc.kill(Signal::new(process::signal::SIGSYS).unwrap(), true);
 			}
 
-			crate::enter_loop();
+			cpu::enter_loop();
 		}
 	};
 

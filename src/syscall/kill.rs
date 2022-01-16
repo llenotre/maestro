@@ -1,5 +1,6 @@
 //! This module implements the `kill` system call, which allows to send a signal to a process.
 
+use crate::cpu;
 use crate::errno::Errno;
 use crate::errno;
 use crate::file::Uid;
@@ -139,13 +140,13 @@ fn handle_state() {
 			// The process has been stopped. Waiting until wakeup
 			process::State::Stopped => {
 				drop(guard);
-				crate::wait();
+				cpu::wait();
 			},
 
 			// The process has been killed. Stopping execution and waiting for the next tick
 			process::State::Zombie => {
 				drop(guard);
-				crate::enter_loop();
+				cpu::enter_loop();
 			},
 
 			_ => {},

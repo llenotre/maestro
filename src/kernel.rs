@@ -92,39 +92,12 @@ const DEFAULT_ENVIRONMENT: &[&str] = &[
 	"TERM=maestro",
 ];
 
-extern "C" {
-	fn kernel_wait();
-	fn kernel_loop() -> !;
-	fn kernel_loop_reset(stack: *mut c_void) -> !;
-	fn kernel_halt() -> !;
-}
-
-/// Makes the kernel wait for an interrupt, then returns.
-/// This function enables interrupts.
-pub fn wait() {
-	unsafe {
-		kernel_wait();
-	}
-}
-
-/// Enters the kernel loop and processes every interrupts indefinitely.
-pub fn enter_loop() -> ! {
-	unsafe {
-		kernel_loop();
-	}
-}
-
-/// Resets the stack to the given value, then calls `enter_loop`.
-/// The function is unsafe because the pointer passed in parameter might be invalid.
-pub unsafe fn loop_reset(stack: *mut c_void) -> ! {
-	kernel_loop_reset(stack);
-}
-
-/// Halts the kernel until reboot.
+/// Halts every CPU cores on the system, and thus halts the kernel.
 pub fn halt() -> ! {
-	unsafe {
-		kernel_halt();
-	}
+	// TODO Halt other cores
+
+	// Halting current core
+	cpu::halt();
 }
 
 /// Field storing the kernel's virtual memory context.
@@ -325,7 +298,8 @@ pub extern "C" fn kernel_main(magic: u32, multiboot_ptr: *const c_void) -> ! {
 	if let Err(e) = init() {
 		kernel_panic!(e, 0);
 	}
-	crate::enter_loop();
+
+	cpu::enter_loop();
 }
 
 /// Called on Rust panic.

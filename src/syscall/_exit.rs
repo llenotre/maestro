@@ -14,11 +14,11 @@ pub fn _exit(regs: &Regs) -> ! {
 		proc.exit(regs.ebx);
 	}
 
+	// TODO Make sure this is valid (probably not) since the stack is not accessible anymore
 	unsafe {
 		// Waiting for the next tick
-		asm!("jmp $kernel_loop");
+		asm!("jmp $cpu_loop");
 	}
 
-	// This loop is here only to avoid a compilation error
-	loop {}
+	unreachable!();
 }

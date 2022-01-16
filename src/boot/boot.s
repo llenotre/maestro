@@ -66,6 +66,7 @@ header_end:
  * The entry point of the kernel.
  */
 multiboot_entry:
+	# Initializing esp, ebp and eflags
 	mov $boot_stack_bottom, %esp
 	xor %ebp, %ebp
 	pushl $0
@@ -74,19 +75,20 @@ multiboot_entry:
 
 	push %eax
 	push %ebx
-	call a20_handle
-	call switch_protected
-	call kernel_remap
+	call a20_handle # Enabling a20 line
+	call switch_protected # Loading GDT
+	call kernel_remap # Remapping the kernel virtual memory
 	pop %ebx
 	pop %eax
 
+	# Calling the kernel's main function
 	mov $(0xc0000000 + boot_stack_bottom), %esp
 	push %ebx
 	push %eax
 	call kernel_main
-	add $12, %esp
 
-	call kernel_halt
+	# The main function is not supposed to return. If it does, crash
+	ud2
 
 
 

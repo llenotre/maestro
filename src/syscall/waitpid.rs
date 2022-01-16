@@ -1,6 +1,7 @@
 //! The `waitpid` system call allows to wait for an event from a child process.
 
 use core::mem::size_of;
+use crate::cpu;
 use crate::errno::Errno;
 use crate::errno;
 use crate::process::Process;
@@ -176,7 +177,7 @@ pub fn do_waitpid(pid: i32, wstatus: *mut i32, options: i32) -> Result<i32, Errn
 			proc.set_state(process::State::Sleeping);
 		}
 
-		crate::wait();
+		cpu::wait();
 	}
 }
 

@@ -339,7 +339,7 @@ impl Scheduler {
 			cpu::end_of_interrupt(0x0);
 
 			unsafe {
-				crate::loop_reset(tmp_stack);
+				cpu::loop_reset(tmp_stack);
 			}
 		}
 	}

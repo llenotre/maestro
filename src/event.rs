@@ -4,6 +4,7 @@
 use core::ffi::c_void;
 use core::mem::MaybeUninit;
 use crate::cpu::pic;
+use crate::cpu;
 use crate::errno::Errno;
 use crate::idt;
 use crate::process::Regs;
@@ -263,7 +264,7 @@ pub extern "C" fn event_handler(id: u32, code: u32, ring: u32, regs: &Regs) {
 			// FIXME: Use of loop action before TSS init shall result in undefined behaviour
 
 			unsafe {
-				crate::loop_reset(tss::get().esp0 as _);
+				cpu::loop_reset(tss::get().esp0 as _);
 			}
 		},
 

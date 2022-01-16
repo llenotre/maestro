@@ -1,5 +1,6 @@
 //! The `execve` system call allows to execute a program from a file.
 
+use crate::cpu;
 use crate::errno::Errno;
 use crate::errno;
 use crate::file::File;
@@ -83,6 +84,6 @@ pub fn execve(regs: &Regs) -> Result<i32, Errno> {
 	idt::wrap_disable_interrupts(|| {
 		// TODO Execute with arguments and environment
 
-		crate::enter_loop();
+		cpu::enter_loop();
 	})
 }

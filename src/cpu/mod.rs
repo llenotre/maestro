@@ -57,6 +57,39 @@ extern "C" {
 	pub fn cr4_get() -> u32;
 	/// Sets the content of the %cr4 register.
 	pub fn cr4_set(flags: u32);
+
+	fn cpu_wait();
+	fn cpu_loop() -> !;
+	fn cpu_loop_reset(stack: *mut c_void) -> !;
+	fn cpu_halt() -> !;
+}
+
+/// Makes the current CPU wait for an interrupt, processes it, then returns.
+/// This function enables interrupts.
+pub fn wait() {
+	unsafe {
+		cpu_wait();
+	}
+}
+
+/// Makes the current CPU loop and process every interrupts indefinitely.
+pub fn enter_loop() -> ! {
+	unsafe {
+		cpu_loop();
+	}
+}
+
+/// Resets the stack to the given value, then calls `enter_loop`.
+/// The function is marked as unsafe because the pointer passed as parameter might be invalid.
+pub unsafe fn loop_reset(stack: *mut c_void) -> ! {
+	cpu_loop_reset(stack);
+}
+
+/// Halts the current CPU until reboot.
+pub fn halt() -> ! {
+	unsafe {
+		cpu_halt();
+	}
 }
 
 /// Model Specific Register (MSR) features.

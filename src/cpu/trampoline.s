@@ -68,6 +68,12 @@ trampoline_complete_flush:
 	or $0x80010000, %eax
 	mov %eax, %cr0
 
+	# Initializing ebp and eflags
+	xor %ebp, %ebp
+	pushl $0
+	popf
+	cli
+
 	# Continue execution
 	ljmp $0x8, $cpu_startup
 
