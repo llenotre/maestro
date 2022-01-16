@@ -5,13 +5,13 @@
 //! The first step in initialization is to read the RSDP table in order to get a pointer to the
 //! RSDT, referring to every other available tables.
 
-//use crate::memory::dma::DMA;
-//use crate::memory::dma;
 use core::intrinsics::wrapping_add;
 use core::ptr::NonNull;
 use crate::cpu::CPU;
 use crate::cpu::apic::APIC;
 use crate::cpu;
+use crate::memory::dma::DMA;
+use crate::memory::dma;
 use crate::util;
 use data::ACPIData;
 use fadt::Fadt;
@@ -103,7 +103,7 @@ pub fn init() {
 	let data = data.unwrap();
 
 	if let Some(madt) = data.get_table::<Madt>() {
-		//let apic_addr = madt.local_apic_addr as *mut c_void;
+		let apic_addr = madt.local_apic_addr as *mut u32;
 
 		// Registering CPU cores
 		madt.foreach_entry(| e: &madt::EntryHeader | match e.get_type() {
@@ -134,13 +134,9 @@ pub fn init() {
 			_ => {},
 		});
 
-		// Set the address to the APIC's registers
-		/*unsafe {
-			cpu::apic::set_addr(apic_addr as _);
-		}
+		// TODO Put in APIC structure?
 		// Creates a DMA for the APIC's registers
-		dma::register(DMA::new(apic_addr, 1, apic_addr)).unwrap(); // TODO Print proper error msg
-		*/
+		dma::register(DMA::new(apic_addr as _, 1, apic_addr as _)).unwrap(); // TODO Print proper error msg
 
 		// TODO doc
 		madt.foreach_entry(| e: &madt::EntryHeader | {

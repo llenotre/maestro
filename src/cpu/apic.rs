@@ -19,6 +19,18 @@ pub const REG_OFFSET_ICR0: usize = 0x300;
 /// The offset of the APIC Interrupt Command Register register 1.
 pub const REG_OFFSET_ICR1: usize = 0x310;
 
+/// Enumeration representing the destination of an IPI.
+pub enum IPIDest {
+	/// The destination is the given APIC ID.
+	Number(u8),
+	/// The destination is the current CPU.
+	SelfCPU,
+	/// The IPI is sent to every CPUs.
+	AllIncludingSelf,
+	/// The IPI is sent to every CPUs except the current one.
+	AllExcludingSelf,
+}
+
 /// Structure representing an APIC.
 pub struct APIC {
 	/// The APIC's ID.
@@ -116,9 +128,7 @@ impl APIC {
 		self.enabled = true;
 	}
 
-	/// Waits until the interrupt has been delivered.
-	/// This function requires the APIC address to be set first. If not set, the behaviour is
-	/// undefined.
+	/// Waits until data written in a register has been delivered.
 	pub fn wait_delivery(&self) {
 		while self.reg_read(REG_OFFSET_ICR0) & (1 << 12) != 0 {
 			unsafe {
@@ -130,5 +140,31 @@ impl APIC {
 	/// Sends an End-Of-Interrupt message to the APIC for the given interrupt `irq`.
 	pub fn end_of_interrupt(&self, _irq: u8) {
 		self.reg_write(REG_OFFSET_EOI, 0);
+	}
+
+	// TODO Allow startup interrupt
+	/// Sends an Inter-Processor Interrupt with vector `n` to the given destination `dest`.
+	/// The function waits until the interrupt is delivered.
+	pub fn send_ipi(&self, n: u8, dest: IPIDest) {
+		let apic_id = match dest {
+			IPIDest::Number(n) => n,
+			_ => 0,
+		};
+
+		let dest_shorthand = match dest {
+			IPIDest::Number(_) => 0b00,
+			IPIDest::SelfCPU => 0b01,
+			IPIDest::AllIncludingSelf => 0b10,
+			IPIDest::AllExcludingSelf => 0b11,
+		};
+
+		let icr1 = (self.reg_read(REG_OFFSET_ICR1) & 0x00ffffff) | ((apic_id as u32) << 24);
+		self.reg_write(REG_OFFSET_ICR1, icr1);
+
+		let icr0 = (self.reg_read(REG_OFFSET_ICR0) & 0xfff00000) | (dest_shorthand << 18)
+			| (n as u32);
+		self.reg_write(REG_OFFSET_ICR0, icr0);
+
+		self.wait_delivery();
 	}
 }

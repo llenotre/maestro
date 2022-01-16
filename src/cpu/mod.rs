@@ -192,19 +192,21 @@ impl CPU {
 		(self.flags & 0b1 != 0) || (self.flags & 0b10 != 0)
 	}
 
-	/// Enables the CPU. If already enabled, the behaviour is undefined.
-	pub fn enable(&self) {
-		// TODO doc function
-		let apic_id = self.apic.get_id() as u32;
+	/// Enables another core with the given APIC ID `apic_id`. If already enabled, the behaviour is
+	/// undefined.
+	pub fn enable_other(&self, apic_id: u8) {
+		let apic_id = apic_id as u32;
 
 		self.apic.reg_write(apic::REG_OFFSET_ERROR_STATUS, 0);
 
+		// TODO Use send_ipi
 		let icr1 = (self.apic.reg_read(apic::REG_OFFSET_ICR1) & 0x00ffffff) | (apic_id << 24);
 		self.apic.reg_write(apic::REG_OFFSET_ICR1, icr1);
 		let icr0 = (self.apic.reg_read(apic::REG_OFFSET_ICR0) & 0xfff00000) | 0xc500;
 		self.apic.reg_write(apic::REG_OFFSET_ICR0, icr0);
 		self.apic.wait_delivery();
 
+		// TODO Use send_ipi
 		let icr1 = (self.apic.reg_read(apic::REG_OFFSET_ICR1) & 0x00ffffff) | (apic_id << 24);
 		self.apic.reg_write(apic::REG_OFFSET_ICR1, icr1);
 		let icr0 = (self.apic.reg_read(apic::REG_OFFSET_ICR0) & 0xfff00000) | 0x8500;
@@ -216,12 +218,14 @@ impl CPU {
 		for _ in 0..2 {
 			self.apic.reg_write(apic::REG_OFFSET_ERROR_STATUS, 0);
 
+			// TODO Use send_ipi
 			let icr1 = (self.apic.reg_read(apic::REG_OFFSET_ICR1) & 0x00ffffff) | (apic_id << 24);
 			self.apic.reg_write(apic::REG_OFFSET_ICR1, icr1);
 			let icr0 = (self.apic.reg_read(apic::REG_OFFSET_ICR0) & 0xfff0f800) | 0x000608;
 			self.apic.reg_write(apic::REG_OFFSET_ICR0, icr0);
 
 			time::udelay(200);
+
 			self.apic.wait_delivery();
 		}
 	}
@@ -338,6 +342,7 @@ fn prepare_trampoline(cores_count: usize) -> Result<malloc::Alloc<*mut u8>, Errn
 	Ok(stacks)
 }
 
+// TODO Clean
 /// Initializes CPU cores other than the main core.
 /// If more than one CPU core is present on the system, the PIC is disabled and the APIC is enabled
 /// instead.
@@ -358,20 +363,26 @@ pub fn init_multicore() {
 		crate::kernel_panic!("Failed to initialize multicore");
 	});
 
+
+	// Starting other CPUs
 	let mut cpu_iter = unsafe { // Safe because running on single thread
 		CPUS.iter()
 	};
-
-	// Starting CPUs
 	for cpu in &mut cpu_iter {
 		let mut cpu_guard = cpu.lock();
 		let cpu = cpu_guard.get_mut();
 
 		if cpu.is_current() {
-			// Enabling APIC on the main core
+			// Enabling main CPU's APIC
 			cpu.get_apic_mut().enable();
 		} else if cpu.can_enable() {
-			cpu.enable();
+			// TODO Ensure the first is the main
+			let main_cpu_guard = unsafe {
+				CPUS[0].lock()
+			};
+			let main_cpu = main_cpu_guard.get();
+
+			main_cpu.enable_other(cpu.get_apic().get_id());
 		}
 	}
 
