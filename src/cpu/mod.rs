@@ -20,6 +20,7 @@ use crate::memory;
 use crate::time;
 use crate::util::container::vec::Vec;
 use crate::util::lock::Mutex;
+use crate::util::math;
 
 /// The physical address to the destination of the trampoline.
 const TRAMPOLINE_PTR: *mut c_void = 0x8000 as *mut c_void;
@@ -209,7 +210,7 @@ pub fn list() -> &'static Mutex<Vec<Mutex<CPU>>> {
 /// The function also allocates stacks for each cores.
 /// `cores_count` is the number of cores on the system.
 /// The function returns the list of allocated stacks which will need to be freed later.
-fn prepare_trampoline(cores_count: usize) -> Result<malloc::Alloc::<*mut u8>, Errno> {
+fn prepare_trampoline(cores_count: usize) -> Result<malloc::Alloc<*mut u8>, Errno> {
 	// Allocating stacks
 	let stacks = malloc::Alloc::<*mut u8>::new_fill(cores_count, | _ | {
 		let stack_bottom = unsafe {
@@ -227,11 +228,23 @@ fn prepare_trampoline(cores_count: usize) -> Result<malloc::Alloc::<*mut u8>, Er
 		transmute::<unsafe extern "C" fn(), *const c_void>(cpu_trampoline)
 	};
 	// The location in the virtual memory at which the trampoline will be copied
-	let dest = memory::kern_to_virt(TRAMPOLINE_PTR) as _;
+	let dest = memory::kern_to_virt(TRAMPOLINE_PTR) as *mut c_void;
 	// The size of the trampoline
 	let size = unsafe {
 		&trampoline_end as *const _ as usize
 	} - src as usize;
+
+	// The pointer to the kernel virtual memory handler
+	let kern_vmem_ptr = unsafe {
+		let vmem = crate::get_vmem().get_mut_payload().as_mut().unwrap();
+
+		// Mapping the trampoline's code
+		let pages = math::ceil_division(size, memory::PAGE_SIZE);
+		vmem.map_range(TRAMPOLINE_PTR, TRAMPOLINE_PTR, pages, vmem::x86::FLAG_WRITE)?;
+
+		let virt_ptr = (&*(vmem.as_ptr() as *const vmem::x86::X86VMem)).get_page_dir();
+		memory::kern_to_phys(virt_ptr as _) as _
+	};
 
 	unsafe {
 		vmem::write_lock_wrap(|| {
@@ -246,20 +259,11 @@ fn prepare_trampoline(cores_count: usize) -> Result<malloc::Alloc::<*mut u8>, Er
 			// Copying kernel vmem pointer
 			let vmem_offset = (&mut trampoline_vmem as *mut _ as usize) - (src as usize);
 			let vmem_ptr = ((dest as usize) + vmem_offset) as *mut *mut u32;
-			*vmem_ptr = 0x0 as _; // TODO Write vmem
+			*vmem_ptr = kern_vmem_ptr;
 		});
 	}
 
 	Ok(stacks)
-}
-
-/// Frees the given list of stacks.
-fn free_stacks(stacks: malloc::Alloc::<*mut u8>) {
-	for s in stacks.get_slice() {
-		unsafe {
-			malloc::free(s.sub(CORE_STACK_SIZE) as _);
-		}
-	}
 }
 
 /// Initializes CPU cores other than the main core.
@@ -282,10 +286,11 @@ pub fn init_multicore() {
 	apic::enable();
 
 	// Preparing the trampoline to launch other cores
-	let stacks = prepare_trampoline(cores_count).unwrap_or_else(| _ | {
+	let _stacks = prepare_trampoline(cores_count).unwrap_or_else(| _ | {
 		crate::kernel_panic!("Failed to initialize multicore");
 	});
 
+	// Starting CPUs
 	for cpu in cores.iter() {
 		let cpu_guard = cpu.lock();
 		let cpu = cpu_guard.get();
@@ -295,8 +300,9 @@ pub fn init_multicore() {
 		}
 	}
 
-	// TODO Wait for cores to be ready
-	free_stacks(stacks);
+	// Trampoline stacks are volontarily leaked to remain usable by their respective core when
+	// needed
+	// TODO Register stacks in a table to replace schedulers' tmp stacks?
 }
 
 /// The function to be called at the end of an interrupt.

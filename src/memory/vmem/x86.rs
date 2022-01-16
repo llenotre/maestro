@@ -335,6 +335,11 @@ impl X86VMem {
 		Ok(vmem)
 	}
 
+	/// Returns the virtual pointer to the page directory.
+	pub unsafe fn get_page_dir(&self) -> *mut u32 {
+		self.page_dir
+	}
+
 	/// Returns the index of the element corresponding to the given virtual address `ptr` for
 	/// element at level `level` in the tree. The level represents the depth in the tree. `0` is
 	/// the deepest.

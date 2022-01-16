@@ -14,8 +14,6 @@
 .global trampoline_vmem
 .global trampoline_end
 
-.extern cpu_startup
-
 .section .text
 .code16
 
@@ -31,14 +29,17 @@ trampoline_load_gdt:
 	mov %ax, %ds
 	lgdt (TRAMPOLINE_OFFSET + (trampoline_gdt - cpu_trampoline))
 
+	# Enable protected mode
 	mov %cr0, %eax
 	or $1, %eax
 	mov %eax, %cr0
 
+	# Jumping to 32 bits code
 	ljmp $0x8, $(TRAMPOLINE_OFFSET + (trampoline_complete_flush - cpu_trampoline))
 
 .code32
 
+	# Setting data segments
 trampoline_complete_flush:
 	mov $0x10, %ax
 	mov %ax, %ds
@@ -53,30 +54,29 @@ trampoline_complete_flush:
 	shr $24, %ebx # TODO Ensure the IDs are linear
 
 	# Stack initialization
-	sub $1, %ebx
-	shl $2, %ebx
+	sub $1, %ebx # n = id - 1
+	shl $2, %ebx # n * 4
 	mov (TRAMPOLINE_OFFSET + (trampoline_stacks - cpu_trampoline)), %eax
+	sub $0xc0000000, %eax # Stacks list pointer to physical address
 	add %eax, %ebx
 	mov (%ebx), %esp
 
 	# Mapping kernel virtual memory
-	mov trampoline_vmem, %eax
+	mov (TRAMPOLINE_OFFSET + (trampoline_vmem - cpu_trampoline)), %eax
 	mov %eax, %cr3
 	mov %cr0, %eax
 	or $0x80010000, %eax
 	mov %eax, %cr0
 
 	# Continue execution
-	call cpu_startup
-	# The function is not supposed to return. If it does, crash
-	ud2
+	ljmp $0x8, $cpu_startup
 
 
 
 .align 8
 
 /*
- * The beginning of the trampline GDT.
+ * The beginning of the trampoline GDT.
  * This GDT is used temporarily when starting a new core.
  */
 trampoline_gdt_start:

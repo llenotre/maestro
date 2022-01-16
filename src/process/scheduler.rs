@@ -285,10 +285,10 @@ impl Scheduler {
 		}
 
 		// The current core ID
-		let core_id = 0; // TODO
+		let core_id = cpu::get_current();
 		// A pointer to the temporary stack for the current core
 		let tmp_stack = unsafe {
-			scheduler.tmp_stacks[core_id].as_ptr_mut() as *mut c_void
+			scheduler.tmp_stacks[core_id as _].as_ptr_mut() as *mut c_void
 		};
 
 		if let Some(next_proc) = &mut scheduler.get_next_process() {
@@ -313,13 +313,11 @@ impl Scheduler {
 				}
 			};
 
-			let core_id = cpu::get_current();
-			let tmp_stack = unsafe {
-				scheduler.tmp_stacks[core_id as _].as_ptr_mut() as *mut c_void
-			};
+			// Setting context switch data for the current core
 			scheduler.ctx_switch_data[core_id as _] = Some(ContextSwitchData {
 				proc: scheduler.curr_proc.as_mut().unwrap().1.clone(),
 			});
+			// The pointer to context switch data
 			let ctx_switch_data_ptr = &mut scheduler.ctx_switch_data[core_id as _] as *mut _;
 
 			drop(guard);
