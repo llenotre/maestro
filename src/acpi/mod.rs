@@ -136,7 +136,8 @@ pub fn init() {
 
 		// TODO Put in APIC structure?
 		// Creates a DMA for the APIC's registers
-		dma::register(DMA::new(apic_addr as _, 1, apic_addr as _)).unwrap(); // TODO Print proper error msg
+		let dma = DMA::new(apic_addr as _, 1, apic_addr as _);
+		dma::register(dma).unwrap(); // TODO Print proper error msg
 
 		// TODO doc
 		madt.foreach_entry(| e: &madt::EntryHeader | {
