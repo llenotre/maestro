@@ -9,6 +9,7 @@ pub mod apic;
 pub mod pic;
 pub mod sse;
 
+use apic::APIC;
 use core::ffi::c_void;
 use core::mem::transmute;
 use core::ptr::NonNull;
@@ -19,6 +20,7 @@ use crate::memory::vmem;
 use crate::memory;
 use crate::time;
 use crate::util::container::vec::Vec;
+use crate::util::lock::IntMutex;
 use crate::util::lock::Mutex;
 use crate::util::math;
 
@@ -94,13 +96,16 @@ pub fn halt() -> ! {
 
 /// Model Specific Register (MSR) features.
 pub mod msr {
+	/// The MSR for the local APIC base address.
+	pub const APIC_BASE: u32 = 0x1b;
+
 	extern "C" {
 		fn msr_exist() -> u32;
 		fn msr_read(i: u32, lo: *mut u32, hi: *mut u32);
 		fn msr_write(i: u32, lo: u32, hi: u32);
 	}
 
-	/// Tells whether MSR exist.
+	/// Tells whether the MSR exist.
 	pub fn exist() -> bool {
 		unsafe {
 			msr_exist() != 0
@@ -126,8 +131,8 @@ pub mod msr {
 pub struct CPU {
 	/// The CPU ID.
 	id: u32,
-	/// The APIC ID.
-	apic_id: u32,
+	/// The CPU's APIC.
+	apic: APIC,
 	/// The I/O APIC address.
 	io_apic_addr: Option<NonNull<u32>>,
 
@@ -137,10 +142,10 @@ pub struct CPU {
 
 impl CPU {
 	/// Creates a new instance.
-	pub fn new(id: u32, apic_id: u32, flags: u32) -> Self {
+	pub fn new(id: u32, apic: APIC, flags: u32) -> Self {
 		Self {
 			id,
-			apic_id,
+			apic,
 			io_apic_addr: None,
 
 			flags,
@@ -152,9 +157,19 @@ impl CPU {
 		self.id
 	}
 
-	/// Returns the APIC ID.
-	pub fn get_apic_id(&self) -> u32 {
-		self.apic_id
+	/// Returns a reference to the APIC.
+	pub fn get_apic(&self) -> &APIC {
+		&self.apic
+	}
+
+	/// Returns a mutable reference to the APIC.
+	pub fn get_apic_mut(&mut self) -> &mut APIC {
+		&mut self.apic
+	}
+
+	/// Tells whether the CPU is the current.
+	pub fn is_current(&self) -> bool {
+		self.apic.get_id() == get_current_id()
 	}
 
 	/// Returns the I/O APIC physical address.
@@ -179,63 +194,87 @@ impl CPU {
 
 	/// Enables the CPU. If already enabled, the behaviour is undefined.
 	pub fn enable(&self) {
-		unsafe {
-			let err = apic::get_register(apic::REG_OFFSET_ERROR_STATUS);
-			let icr0 = apic::get_register(apic::REG_OFFSET_ICR0);
-			let icr1 = apic::get_register(apic::REG_OFFSET_ICR1);
+		// TODO doc function
+		let apic_id = self.apic.get_id() as u32;
 
-			ptr::write_volatile(err, 0);
+		self.apic.reg_write(apic::REG_OFFSET_ERROR_STATUS, 0);
 
-			ptr::write_volatile(icr1, (ptr::read_volatile(icr1) & 0x00ffffff)
-				| (self.apic_id << 24));
-			ptr::write_volatile(icr0, (ptr::read_volatile(icr0) & 0xfff00000) | 0xc500);
-			apic::wait_delivery();
+		let icr1 = (self.apic.reg_read(apic::REG_OFFSET_ICR1) & 0x00ffffff) | (apic_id << 24);
+		self.apic.reg_write(apic::REG_OFFSET_ICR1, icr1);
+		let icr0 = (self.apic.reg_read(apic::REG_OFFSET_ICR0) & 0xfff00000) | 0xc500;
+		self.apic.reg_write(apic::REG_OFFSET_ICR0, icr0);
+		self.apic.wait_delivery();
 
-			ptr::write_volatile(icr1, (ptr::read_volatile(icr1) & 0x00ffffff)
-				| (self.apic_id << 24));
-			ptr::write_volatile(icr0, (ptr::read_volatile(icr0) & 0xfff00000) | 0x8500);
-			apic::wait_delivery();
+		let icr1 = (self.apic.reg_read(apic::REG_OFFSET_ICR1) & 0x00ffffff) | (apic_id << 24);
+		self.apic.reg_write(apic::REG_OFFSET_ICR1, icr1);
+		let icr0 = (self.apic.reg_read(apic::REG_OFFSET_ICR0) & 0xfff00000) | 0x8500;
+		self.apic.reg_write(apic::REG_OFFSET_ICR0, icr0);
+		self.apic.wait_delivery();
 
-			time::mdelay(10);
+		time::mdelay(10);
 
-			for _ in 0..2 {
-				ptr::write_volatile(err, 0);
+		for _ in 0..2 {
+			self.apic.reg_write(apic::REG_OFFSET_ERROR_STATUS, 0);
 
-				ptr::write_volatile(icr1, (ptr::read_volatile(icr1) & 0x00ffffff)
-					| (self.apic_id << 24));
-				ptr::write_volatile(icr0, (ptr::read_volatile(icr0) & 0xfff0f800) | 0x000608);
+			let icr1 = (self.apic.reg_read(apic::REG_OFFSET_ICR1) & 0x00ffffff) | (apic_id << 24);
+			self.apic.reg_write(apic::REG_OFFSET_ICR1, icr1);
+			let icr0 = (self.apic.reg_read(apic::REG_OFFSET_ICR0) & 0xfff0f800) | 0x000608;
+			self.apic.reg_write(apic::REG_OFFSET_ICR0, icr0);
 
-				time::udelay(200);
-				apic::wait_delivery();
-			}
+			time::udelay(200);
+			self.apic.wait_delivery();
 		}
 	}
 }
 
 /// The list of CPUs on the system.
-static CPUS: Mutex<Vec<Mutex<CPU>>> = Mutex::new(Vec::new());
+static mut CPUS: Vec<IntMutex<CPU>> = Vec::new();
 
 /// Returns the number of CPUs on the system.
 pub fn get_count() -> usize {
-	CPUS.lock().get().len()
-}
-
-// TODO Return a dynamicaly associated ID instead to ensure that the IDs are linear
-/// Returns the ID of the current running CPU.
-pub fn get_current() -> u32 {
 	unsafe {
-		get_current_apic()
+		CPUS.len()
 	}
 }
 
+/// Returns the APIC ID of the current running CPU.
+pub fn get_current_id() -> u8 {
+	unsafe {
+		get_current_apic() as _
+	}
+}
+
+/// Returns the current core.
+pub fn get_current() -> &'static IntMutex<CPU> {
+	// TODO Optimize
+	let iter = unsafe {
+		CPUS.iter()
+	};
+	for cpu in iter {
+		let cpu_guard = cpu.lock();
+		let c = cpu_guard.get();
+
+		if c.is_current() {
+			drop(cpu_guard);
+			return cpu;
+		}
+	}
+
+	// TODO panic
+	todo!();
+}
+
 /// Adds a new core to the core list.
-pub fn add_core(cpu: CPU) -> Result<(), Errno> {
-	CPUS.lock().get_mut().push(Mutex::new(cpu))
+/// This function is **not** thread-safe. Thus it is marked as unsafe.
+pub unsafe fn add_core(cpu: CPU) -> Result<(), Errno> {
+	CPUS.push(Mutex::new(cpu))
 }
 
 /// Returns a reference to the CPUs list's Mutex.
-pub fn list() -> &'static Mutex<Vec<Mutex<CPU>>> {
-	&CPUS
+pub fn list() -> &'static Vec<IntMutex<CPU>> {
+	unsafe {
+		&CPUS
+	}
 }
 
 /// Copies the trampoline code to its destination address to ensure it is accessible from real mode
@@ -304,31 +343,34 @@ fn prepare_trampoline(cores_count: usize) -> Result<malloc::Alloc<*mut u8>, Errn
 /// instead.
 /// This function must be called **only once, at boot**.
 pub fn init_multicore() {
-	let curr_id = get_current();
-	let mut cores_guard = CPUS.lock();
-	let cores = cores_guard.get_mut();
-	let cores_count = cores.len();
+	let cores_count = get_count();
 
 	// If there is not multiple cores, the function does nothing
 	if cores_count <= 1 {
 		return;
 	}
 
-	// Using APIC instead of PIC
+	// Disabling legacy PIC
 	pic::disable();
-	apic::enable();
 
 	// Preparing the trampoline to launch other cores
 	let _stacks = prepare_trampoline(cores_count).unwrap_or_else(| _ | {
 		crate::kernel_panic!("Failed to initialize multicore");
 	});
 
-	// Starting CPUs
-	for cpu in cores.iter() {
-		let cpu_guard = cpu.lock();
-		let cpu = cpu_guard.get();
+	let mut cpu_iter = unsafe { // Safe because running on single thread
+		CPUS.iter()
+	};
 
-		if cpu.apic_id != curr_id && cpu.can_enable() {
+	// Starting CPUs
+	for cpu in &mut cpu_iter {
+		let mut cpu_guard = cpu.lock();
+		let cpu = cpu_guard.get_mut();
+
+		if cpu.is_current() {
+			// Enabling APIC on the main core
+			cpu.get_apic_mut().enable();
+		} else if cpu.can_enable() {
 			cpu.enable();
 		}
 	}
@@ -341,12 +383,12 @@ pub fn init_multicore() {
 /// The function to be called at the end of an interrupt.
 #[no_mangle]
 pub extern "C" fn end_of_interrupt(irq: u8) {
-	let apic_enabled = unsafe {
-		apic::is_enabled()
-	};
+	let curr_cpu_guard = get_current().lock();
+	let curr_cpu = curr_cpu_guard.get();
+	let apic = curr_cpu.get_apic();
 
-	if apic_enabled {
-		apic::end_of_interrupt(irq);
+	if apic.is_enabled() {
+		apic.end_of_interrupt(irq);
 	} else {
 		pic::end_of_interrupt(irq);
 	}

@@ -5,13 +5,13 @@
 //! The first step in initialization is to read the RSDP table in order to get a pointer to the
 //! RSDT, referring to every other available tables.
 
-use core::ffi::c_void;
+//use crate::memory::dma::DMA;
+//use crate::memory::dma;
 use core::intrinsics::wrapping_add;
 use core::ptr::NonNull;
 use crate::cpu::CPU;
+use crate::cpu::apic::APIC;
 use crate::cpu;
-use crate::memory::dma::DMA;
-use crate::memory::dma;
 use crate::util;
 use data::ACPIData;
 use fadt::Fadt;
@@ -103,7 +103,7 @@ pub fn init() {
 	let data = data.unwrap();
 
 	if let Some(madt) = data.get_table::<Madt>() {
-		let apic_addr = madt.local_apic_addr as *mut c_void;
+		//let apic_addr = madt.local_apic_addr as *mut c_void;
 
 		// Registering CPU cores
 		madt.foreach_entry(| e: &madt::EntryHeader | match e.get_type() {
@@ -112,7 +112,14 @@ pub fn init() {
 					&*(e as *const _ as *const madt::EntryProcessorLocalAPIC)
 				};
 
-				cpu::add_core(CPU::new(e.id as _, e.apic_id as _, e.flags)).unwrap_or_else(| _ | {
+				// The CPU's APIC
+				let apic = APIC::new(e.apic_id);
+				// The CPU
+				let cpu = CPU::new(e.id as _, apic, e.flags);
+
+				unsafe { // Safe because running on single thread
+					cpu::add_core(cpu)
+				}.unwrap_or_else(| _ | {
 					crate::kernel_panic!("Failed to register a CPU");
 				});
 			},
@@ -128,11 +135,12 @@ pub fn init() {
 		});
 
 		// Set the address to the APIC's registers
-		unsafe {
+		/*unsafe {
 			cpu::apic::set_addr(apic_addr as _);
 		}
 		// Creates a DMA for the APIC's registers
 		dma::register(DMA::new(apic_addr, 1, apic_addr)).unwrap(); // TODO Print proper error msg
+		*/
 
 		// TODO doc
 		madt.foreach_entry(| e: &madt::EntryHeader | {
@@ -142,15 +150,12 @@ pub fn init() {
 						&*(e as *const _ as *const madt::EntryIOAPIC)
 					};
 
-					let list_mutex = cpu::list();
-					let mut list_guard = list_mutex.lock();
-					let list = list_guard.get_mut();
-
+					let list = cpu::list();
 					for i in 0..list.len() {
 						let mut guard = list[i].lock();
 						let cpu = guard.get_mut();
 
-						if cpu.get_apic_id() == e.io_apic_id as _ {
+						if cpu.get_apic().get_id() == e.io_apic_id as _ {
 							cpu.set_io_apic_addr(NonNull::new(e.io_apic_addr as _));
 							break;
 						}

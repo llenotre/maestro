@@ -8,10 +8,10 @@ use crate::idt;
 #[no_mangle]
 extern "C" fn cpu_startup() -> ! {
 	idt::bind();
-	// TODO Bind the kernel virtual memory context handler to the current CPU
+	// TODO Enable local APIC
 
-	crate::println!("Hello from CPU {}", cpu::get_current()); // TODO rm
-	crate::halt(); // TODO rm
+	crate::println!("Hello from CPU {}", cpu::get_current_id()); // TODO rm
+	cpu::halt(); // TODO rm
 
 	// TODO Wait until the scheduler is ready, then enable interrupts to execute processes
 }

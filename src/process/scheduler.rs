@@ -285,7 +285,7 @@ impl Scheduler {
 		}
 
 		// The current core ID
-		let core_id = cpu::get_current();
+		let core_id = cpu::get_current_id();
 		// A pointer to the temporary stack for the current core
 		let tmp_stack = unsafe {
 			scheduler.tmp_stacks[core_id as _].as_ptr_mut() as *mut c_void
