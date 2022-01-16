@@ -30,8 +30,14 @@ const TRAMPOLINE_PTR: *mut c_void = 0x8000 as *mut c_void;
 const CORE_STACK_SIZE: usize = memory::PAGE_SIZE * 8;
 
 extern "C" {
-	/// TODO doc
+	/// Returns the ID of the current APIC.
 	fn get_current_apic() -> u32;
+	/// Tells whether the CPU has SSE.
+	fn cpuid_has_sse() -> bool;
+	/// Returns the core crystal clock frequency in `clock_freq` and the ratio between the clock
+	/// and the TSC in `tsc_numerator` and `tsc_denominator`.
+	fn cpuid_clock_ratios(tsc_denominator: &mut u32, tsc_numerator: &mut u32,
+		clock_freq: &mut u32);
 
 	/// The symbol of the CPU's startup trampoline.
 	fn cpu_trampoline();
@@ -41,9 +47,6 @@ extern "C" {
 	static mut trampoline_vmem: *mut u32;
 	/// The symbol at the end of the trampoline.
 	static trampoline_end: c_void;
-
-	/// Tells whether the CPU has SSE.
-	fn cpuid_has_sse() -> bool;
 
 	/// Returns the content of the %cr0 register.
 	pub fn cr0_get() -> u32;

@@ -2,6 +2,7 @@
  * This file implements functions related to the CPUID instruction (x86).
  */
 
+.global cpuid_clock_ratios
 .global cpuid_has_sse
 .global get_current_apic
 .global msr_exist
@@ -65,7 +66,7 @@ msr_write:
 get_current_apic:
 	push %ebx
 
-	mov $1, %eax
+	mov $0x1, %eax
 	cpuid
 	shr $24, %ebx
 
@@ -87,4 +88,25 @@ cpuid_has_sse:
 	mov %edx, %eax
 
 	pop %ebx
+	ret
+
+/*
+ * Returns the CPU's clock ratios.
+ */
+cpuid_clock_ratios:
+	push %ebp
+	mov %esp, %ebp
+
+	push %ebx
+
+	mov $0x15, %eax
+	cpuid
+	mov %ecx, 8(%ebp)
+	mov %ebx, 12(%ebp)
+	mov %eax, 16(%ebp)
+
+	pop %ebx
+
+	mov %ebp, %esp
+	pop %ebp
 	ret
