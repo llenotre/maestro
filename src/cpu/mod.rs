@@ -356,6 +356,7 @@ pub fn init_multicore() {
 	}
 
 	// Disabling legacy PIC
+	// TODO Remove PIT timer
 	pic::disable();
 
 	// Preparing the trampoline to launch other cores

@@ -53,7 +53,6 @@ pub mod module;
 pub mod multiboot;
 #[macro_use]
 pub mod panic;
-pub mod pit;
 #[macro_use]
 pub mod print;
 pub mod process;
