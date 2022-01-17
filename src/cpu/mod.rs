@@ -371,6 +371,9 @@ pub fn init_multicore() {
 		}
 	}
 
+	// Starting main CPU's APIC timer
+	// TODO
+
 	// Trampoline stacks are volontarily leaked to remain usable by their respective core when
 	// needed
 	// TODO Register stacks in a table to replace schedulers' tmp stacks?

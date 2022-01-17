@@ -112,7 +112,7 @@ impl APIC {
 	}
 
 	/// Enables the APIC. If already enabled, the function does nothing.
-	/// This function works only for the current core. TODO doc
+	/// If this function is called for a core which is not the current one, it does nothing.
 	pub fn enable(&mut self) {
 		if self.enabled {
 			return;
@@ -120,7 +120,7 @@ impl APIC {
 
 		// Check the APIC is the current core's APIC
 		if self.get_id() != cpu::get_current_id() {
-			// TODO Panic?
+			return;
 		}
 
 		// Getting the registers' base

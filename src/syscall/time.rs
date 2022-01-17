@@ -29,7 +29,7 @@ pub fn time(regs: &Regs) -> Result<i32, Errno> {
 	// Writing the timestamp to the given location, if not null
 	if !tloc.is_null() {
 		unsafe { // Safe because the access is checked before
-			*tloc = time;
+			*tloc = time as _;
 		}
 	}
 

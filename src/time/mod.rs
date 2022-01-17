@@ -12,14 +12,20 @@ use crate::util::container::vec::Vec;
 use crate::util::lock::Mutex;
 
 /// Type representing a timestamp.
-pub type Timestamp = u32;
+pub type Timestamp = u64;
 
 /// Trait representing a source able to provide the current timestamp.
 pub trait ClockSource {
 	/// The name of the source.
 	fn get_name(&self) -> &str;
-	/// Returns the current timestamp in seconds.
+
+	/// Returns the current timestamp in milliseconds.
 	fn get_time(&mut self) -> Timestamp;
+
+	/// Sets the current timestamp in milliseconds.
+	/// This function might not be supported by the clock source. In which case, the function does
+	/// nothing.
+	fn set_time(&mut self, timestamp: Timestamp);
 }
 
 // TODO Order by name to allow binary search
