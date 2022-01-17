@@ -4,6 +4,11 @@
 use core::cmp::min;
 use crate::cpu::apic::APIC;
 use crate::cpu;
+use crate::errno::Errno;
+use crate::event::CallbackHook;
+use crate::event::InterruptResult;
+use crate::event::InterruptResultAction;
+use crate::event;
 use crate::time::timer::Timer;
 use crate::util::boxed::Box;
 use crate::util::math::rational::Rational;
@@ -25,23 +30,31 @@ pub struct APICTimer {
 	interrupt_counter: u64,
 	/// The callback being called `freq` times per second.
 	callback: Option<Box<dyn FnMut()>>,
+	/// The hook for the interrupt handler callback.
+	callback_hook: Option<CallbackHook>,
 }
 
 impl APICTimer {
 	/// Creates a timer from the given `apic`.
-	pub fn new(apic: WeakPtr<APIC>) -> Self {
-		let s = Self {
+	/// If two timers are created for the same APIC, the behaviour is undefined.
+	pub fn new(apic: WeakPtr<APIC>) -> Result<Self, Errno> {
+		let mut s = Self {
 			apic,
 
 			freq: Rational::from(0),
 
 			interrupt_counter: 0,
 			callback: None,
+			callback_hook: None,
 		};
+		s.callback_hook = Some(event::register_callback(TIMER_VEC, 0, | _, _, _, _ | {
+			// TODO
+			crate::println!("test");
 
-		// TODO Register interrupt handler
+			InterruptResult::new(false, InterruptResultAction::Resume)
+		})?);
 
-		s
+		Ok(s)
 	}
 
 	/// The counter ratio is a fraction of the number of interrupts to ignore between each call to

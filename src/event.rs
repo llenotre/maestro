@@ -108,7 +108,7 @@ struct CallbackWrapper {
 #[must_use]
 pub struct CallbackHook {
 	/// The id of the interrupt the callback is bound to.
-	id: usize,
+	id: u8,
 	/// The priority of the callback.
 	priority: u32,
 
@@ -118,7 +118,7 @@ pub struct CallbackHook {
 
 impl CallbackHook {
 	/// Creates a new instance.
-	fn new(id: usize, priority: u32, ptr: *const c_void) -> Self {
+	fn new(id: u8, priority: u32, ptr: *const c_void) -> Self {
 		Self {
 			id,
 			priority,
@@ -156,14 +156,14 @@ pub fn init() {
 /// `callback` is the callback to register.
 ///
 /// If the `id` is invalid or if an allocation fails, the function shall return an error.
-pub fn register_callback<T>(id: usize, priority: u32, callback: T) -> Result<CallbackHook, Errno>
+pub fn register_callback<T>(id: u8, priority: u32, callback: T) -> Result<CallbackHook, Errno>
 	where T: 'static + FnMut(u32, u32, &Regs, u32) -> InterruptResult {
-	debug_assert!(id < idt::ENTRIES_COUNT);
+	debug_assert!((id as usize) < idt::ENTRIES_COUNT);
 
 	idt::wrap_disable_interrupts(|| {
 		let mut guard = unsafe {
 			CALLBACKS.assume_init_mut()
-		}[id].lock();
+		}[id as usize].lock();
 		let vec = &mut guard.get_mut();
 
 		let index = {
@@ -190,10 +190,10 @@ pub fn register_callback<T>(id: usize, priority: u32, callback: T) -> Result<Cal
 }
 
 /// Removes the callback with id `id`, priority `priority` and pointer `ptr`.
-fn remove_callback(id: usize, priority: u32, ptr: *const c_void) {
+fn remove_callback(id: u8, priority: u32, ptr: *const c_void) {
 	let mut guard = unsafe {
 		CALLBACKS.assume_init_mut()
-	}[id].lock();
+	}[id as usize].lock();
 	let vec = &mut guard.get_mut();
 
 	let res = vec.binary_search_by(| x | {
