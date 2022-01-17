@@ -33,15 +33,6 @@ impl Rational {
 		}
 	}
 
-	/// Creates an instance from two integers `a` and `b` such as the number equals `a / b`.
-	/// If `b` is zero, the behaviour is undefined.
-	pub const fn from_integers(a: i64, b: i64) -> Self {
-		Self {
-			a,
-			b,
-		}
-	}
-
 	/// Returns the numerator of the number.
 	pub fn get_numerator(&self) -> i64 {
 		self.a

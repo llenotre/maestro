@@ -22,6 +22,7 @@ use crate::time;
 use crate::util::container::vec::Vec;
 use crate::util::lock::IntMutex;
 use crate::util::lock::Mutex;
+use crate::util::math::rational::Rational;
 use crate::util::math;
 
 /// The physical address to the destination of the trampoline.
@@ -282,6 +283,18 @@ pub fn list() -> &'static Vec<IntMutex<CPU>> {
 	unsafe {
 		&CPUS
 	}
+}
+
+/// Returns the TSC/core crystal clock ratio and the frequency of the core crystal clock in hertz.
+pub fn get_clock_ratios() -> (Rational, u32) {
+	let mut denominator = 0;
+	let mut numerator = 0;
+	let mut freq = 0;
+	unsafe {
+		cpuid_clock_ratios(&mut denominator, &mut numerator, &mut freq);
+	}
+
+	(Rational::from(numerator as i64) / denominator as i64, freq)
 }
 
 /// Copies the trampoline code to its destination address to ensure it is accessible from real mode
