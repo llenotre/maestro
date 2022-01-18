@@ -154,6 +154,7 @@ impl Mul<i64> for Rational {
 	}
 }
 
+// TODO Watch for division by 0
 impl Div for Rational {
 	type Output = Self;
 
@@ -167,6 +168,7 @@ impl Div for Rational {
 	}
 }
 
+// TODO Watch for division by 0
 impl Div<i64> for Rational {
 	type Output = Self;
 
@@ -231,12 +233,9 @@ mod test {
 		assert_eq!(Rational::from(1) + Rational::from(2), Rational::from(3));
 		assert_eq!(Rational::from(1) + Rational::from(-1), Rational::from(0));
 
-		assert_eq!(Rational::from_integers(1, 2) + Rational::from_integers(1, 2),
-			Rational::from(1));
-		assert_eq!(Rational::from_integers(1, 3) + Rational::from_integers(2, 3),
-			Rational::from(1));
-		assert_eq!(Rational::from_integers(1, 2) + Rational::from_integers(1, 3),
-			Rational::from_integers(5, 6));
+		assert_eq!(Rational::from(1) / 2 + Rational::from(1) / 2, Rational::from(1));
+		assert_eq!(Rational::from(1) / 3 + Rational::from(2) / 3, Rational::from(1));
+		assert_eq!(Rational::from(1) / 2 + Rational::from(1) / 3, Rational::from(5) / 6);
 	}
 
 	#[test_case]
@@ -246,12 +245,9 @@ mod test {
 		assert_eq!(Rational::from(1) - Rational::from(2), Rational::from(-1));
 		assert_eq!(Rational::from(1) - Rational::from(-1), Rational::from(2));
 
-		assert_eq!(Rational::from_integers(1, 2) - Rational::from_integers(1, 2),
-			Rational::from(0));
-		assert_eq!(Rational::from_integers(1, 3) - Rational::from_integers(2, 3),
-			Rational::from_integers(-1, 3));
-		assert_eq!(Rational::from_integers(1, 2) - Rational::from_integers(1, 3),
-			Rational::from_integers(1, 6));
+		assert_eq!(Rational::from(1) / 2 - Rational::from(1) / 2, Rational::from(0));
+		assert_eq!(Rational::from(1) / 3 - Rational::from(2) / 3, Rational::from(-1) / 3);
+		assert_eq!(Rational::from(1) / 2 - Rational::from(1) / 3, Rational::from(1) / 6);
 	}
 
 	#[test_case]
@@ -261,25 +257,19 @@ mod test {
 		assert_eq!(Rational::from(1) * Rational::from(2), Rational::from(2));
 		assert_eq!(Rational::from(1) * Rational::from(-1), Rational::from(-1));
 
-		assert_eq!(Rational::from_integers(1, 2) * Rational::from_integers(1, 2),
-			Rational::from_integers(1, 4));
-		assert_eq!(Rational::from_integers(1, 3) * Rational::from_integers(2, 3),
-			Rational::from_integers(2, 9));
-		assert_eq!(Rational::from_integers(1, 2) * Rational::from_integers(1, 3),
-			Rational::from_integers(1, 6));
+		assert_eq!(Rational::from(1) / 2 * Rational::from(1) / 2, Rational::from(1) / 4);
+		assert_eq!(Rational::from(1) / 3 * Rational::from(2) / 3, Rational::from(2) / 9);
+		assert_eq!(Rational::from(1) / 2 * Rational::from(1) / 3, Rational::from(1) / 6);
 	}
 
 	#[test_case]
 	fn rational_div() {
 		assert_eq!(Rational::from(1) / Rational::from(1), Rational::from(1));
-		assert_eq!(Rational::from(1) / Rational::from(2), Rational::from_integers(1, 2));
-		assert_eq!(Rational::from(1) / Rational::from(-1), Rational::from_integers(1, -1));
+		assert_eq!(Rational::from(1) / Rational::from(2), Rational::from(1) / 2);
+		assert_eq!(Rational::from(1) / Rational::from(-1), Rational::from(1) / -1);
 
-		assert_eq!(Rational::from_integers(1, 2) / Rational::from_integers(1, 2),
-			Rational::from(1));
-		assert_eq!(Rational::from_integers(1, 3) / Rational::from_integers(2, 3),
-			Rational::from_integers(1, 2));
-		assert_eq!(Rational::from_integers(1, 2) / Rational::from_integers(1, 3),
-			Rational::from_integers(3, 2));
+		assert_eq!((Rational::from(1) / 2) / (Rational::from(1) / 2), Rational::from(1));
+		assert_eq!((Rational::from(1) / 3) / (Rational::from(2) / 3), Rational::from(1) / 2);
+		assert_eq!((Rational::from(1) / 2) / (Rational::from(1) / 3), Rational::from(3) / 2);
 	}
 }
