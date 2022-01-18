@@ -1,7 +1,7 @@
 //! The `wait` system call is a simpler version of the `waitpid` system call.
 
 use crate::errno::Errno;
-use crate::process::Regs;
+use crate::process::regs::Regs;
 use super::waitpid;
 
 /// The implementation of the `wait` syscall.

@@ -35,6 +35,7 @@ use crate::gdt::ldt::LDT;
 use crate::gdt;
 use crate::limits;
 use crate::memory::vmem;
+use crate::process::regs::Regs;
 use crate::util::FailableClone;
 use crate::util::container::bitfield::Bitfield;
 use crate::util::container::vec::Vec;
@@ -77,9 +78,6 @@ const STDERR_FILENO: u32 = 2;
 
 /// The number of TLS entries per process.
 pub const TLS_ENTRIES_COUNT: usize = 3;
-
-// TODO Remove later (need to refactor a big part of the project)
-pub use regs::Regs;
 
 /// An enumeration containing possible states for a process.
 #[derive(Copy, Clone, Debug, PartialEq)]

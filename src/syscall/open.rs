@@ -11,7 +11,7 @@ use crate::file::file_descriptor;
 use crate::file::path::Path;
 use crate::file;
 use crate::process::Process;
-use crate::process::Regs;
+use crate::process::regs::Regs;
 use crate::util::FailableClone;
 use crate::util::ptr::SharedPtr;
 

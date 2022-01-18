@@ -8,7 +8,7 @@ use crate::file::fcache;
 use crate::file::path::Path;
 use crate::idt;
 use crate::process::Process;
-use crate::process::Regs;
+use crate::process::regs::Regs;
 use crate::util::IO;
 
 /// The maximum length of the shebang.

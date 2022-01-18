@@ -70,7 +70,7 @@ use brk::brk;
 use chdir::chdir;
 use chroot::chroot;
 use close::close;
-use crate::process::Regs;
+use crate::process::regs::Regs;
 use creat::creat;
 use delete_module::delete_module;
 use dup2::dup2;

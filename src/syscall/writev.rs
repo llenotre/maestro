@@ -7,7 +7,7 @@ use crate::errno::Errno;
 use crate::errno;
 use crate::limits;
 use crate::process::Process;
-use crate::process::Regs;
+use crate::process::regs::Regs;
 use crate::process::iovec::IOVec;
 
 /// The implementation of the `writev` syscall.

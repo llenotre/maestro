@@ -7,7 +7,7 @@ use crate::cpu::pic;
 use crate::cpu;
 use crate::errno::Errno;
 use crate::idt;
-use crate::process::Regs;
+use crate::process::regs::Regs;
 use crate::process::tss;
 use crate::util::boxed::Box;
 use crate::util::container::vec::Vec;
