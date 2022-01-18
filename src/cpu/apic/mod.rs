@@ -1,6 +1,7 @@
 //! The Advanced Programmable Interrupt Controller (APIC) is the successor of the PIC. It is meant
 /// to support multicore CPUs.
 
+mod io;
 mod timer;
 
 use core::arch::asm;
