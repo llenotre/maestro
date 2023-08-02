@@ -1,140 +1,128 @@
-//! This module handles time-releated features.
+//! This module implements time management.
 //!
-//! The kernel stores a list of clock sources. A clock source is an object that
-//! allow to get the current timestamp.
+//! A clock is an object that gives the current time. A distinction has to be made between:
+//! - Hardware Clocks, which are physical components (from the point of view of the kernel) which
+//! give the ability to measure the passage of time, notably by producing interruptions at a given
+//! frequency.
+//! - Software Clocks, which maintain a timestamp based on hardware clocks.
 
+pub mod clock;
+pub mod hw;
 pub mod timer;
 pub mod unit;
 
-use crate::errno::Errno;
+use crate::errno::EResult;
+use crate::event;
+use crate::event::CallbackResult;
 use crate::util::boxed::Box;
-use crate::util::container::hashmap::HashMap;
-use crate::util::container::string::String;
-use crate::util::lock::*;
-use unit::TimeUnit;
+use crate::util::lock::IntMutex;
+use crate::util::math::rational::Rational;
+use core::mem::ManuallyDrop;
 use unit::Timestamp;
 use unit::TimestampScale;
 
-/// Trait representing a source able to provide the current timestamp.
-pub trait ClockSource {
-	/// The name of the source.
-	fn get_name(&self) -> &'static str;
-	/// Returns the current timestamp in seconds.
-	/// `scale` specifies the scale of the returned timestamp.
-	fn get_time(&mut self, scale: TimestampScale) -> Timestamp;
-}
-
-/// Structure wrapping a clock source.
-struct ClockSourceWrapper {
-	/// The clock source.
-	src: Box<dyn ClockSource>,
-
-	/// The last timestamp returned by the clock.
-	///
-	/// This timestamp is used in case the caller requires monotonic time and the clock came back
-	/// in the past.
-	last: [Timestamp; 4],
-}
-
-/// Map containing all the clock sources.
-static CLOCK_SOURCES: Mutex<HashMap<String, ClockSourceWrapper>> = Mutex::new(HashMap::new());
-
-/// Adds the new clock source to the clock sources list.
-pub fn add_clock_source<T: 'static + ClockSource>(source: T) -> Result<(), Errno> {
-	let mut sources = CLOCK_SOURCES.lock();
-
-	let name = String::try_from(source.get_name())?;
-	sources.insert(
-		name,
-		ClockSourceWrapper {
-			src: Box::new(source)?,
-
-			last: [0; 4],
-		},
-	)?;
-
-	Ok(())
-}
-
-/// Removes the clock source with the given name.
+/// Atomic storage for a timestamp.
 ///
-/// If the clock source doesn't exist, the function does nothing.
-pub fn remove_clock_source(name: &str) {
-	let mut sources = CLOCK_SOURCES.lock();
-	sources.remove(name.as_bytes());
+/// This wrapper is required because timestamps span 64 bits, but 32 bits architectures may not
+/// support atomic operations on 64 bits operands.
+pub struct AtomicTimestamp {
+	#[cfg(target_pointer_width = "32")]
+	inner: IntMutex<Timestamp>,
+	#[cfg(target_pointer_width = "64")]
+	inner: AtomicU64,
 }
 
-/// Returns the current timestamp from the preferred clock source.
-///
-/// Arguments:
-/// - `scale` specifies the scale of the returned timestamp.
-/// - `monotonic` tells whether the returned time should be monotonic.
-///
-/// If no clock source is available, the function returns `None`.
-pub fn get(scale: TimestampScale, monotonic: bool) -> Option<Timestamp> {
-	let mut sources = CLOCK_SOURCES.lock();
-	if sources.is_empty() {
-		return None;
+impl AtomicTimestamp {
+	pub const fn new(val: Timestamp) -> Self {
+		Self {
+			#[cfg(target_pointer_width = "32")]
+			inner: IntMutex::new(val),
+			#[cfg(target_pointer_width = "64")]
+			inner: AtomicU64::new(val),
+		}
 	}
 
-	// Getting clock source
-	let clock_src = sources.get_mut("cmos".as_bytes())?; // TODO Select the preferred source
+	/// Loads and returns the value.
+	#[inline]
+	pub fn load(&self) -> Timestamp {
+		#[cfg(target_pointer_width = "32")]
+		{
+			*self.inner.lock()
+		}
 
-	// Getting reference to last timestamp
-	let last = match scale {
-		TimestampScale::Second => &mut clock_src.last[0],
-		TimestampScale::Millisecond => &mut clock_src.last[1],
-		TimestampScale::Microsecond => &mut clock_src.last[2],
-		TimestampScale::Nanosecond => &mut clock_src.last[3],
-	};
-
-	// Getting time
-	let time = clock_src.src.get_time(scale);
-
-	// Making the clock monotonic if needed
-	let ts = if monotonic && *last > time {
-		*last
-	} else {
-		time
-	};
-	if ts > *last {
-		*last = ts;
+		#[cfg(target_pointer_width = "64")]
+		{
+			self.inner.load(core::sync::atomic::Ordering::Relaxed)
+		}
 	}
 
-	Some(ts)
-}
+	/// Stores the given value and returns the previous.
+	#[inline]
+	pub fn store(&self, val: Timestamp) -> Timestamp {
+		#[cfg(target_pointer_width = "32")]
+		{
+			let mut guard = self.inner.lock();
+			let prev = *guard;
+			*guard = val;
+			prev
+		}
 
-/// Returns the current timestamp from the given clock `clk`.
-///
-/// Arguments:
-/// - `scale` specifies the scale of the returned timestamp.
-/// - `monotonic` tells whether the returned time should be monotonic.
-///
-/// If the clock doesn't exist, the function returns `None`.
-pub fn get_struct<T: TimeUnit>(_clk: &[u8], monotonic: bool) -> Option<T> {
-	// TODO use the given clock
-	let ts = get(TimestampScale::Nanosecond, monotonic)?;
-	Some(T::from_nano(ts))
-}
+		#[cfg(target_pointer_width = "64")]
+		{
+			self.inner.store(val, core::sync::atomic::Ordering::Relaxed)
+		}
+	}
 
-/// Makes the CPU wait for at least `n` milliseconds.
-pub fn mdelay(n: u32) {
-	// TODO
-	udelay(n * 1000);
-}
+	/// Adds the given value and returns the previous.
+	#[inline]
+	pub fn fetch_add(&self, val: Timestamp) -> Timestamp {
+		#[cfg(target_pointer_width = "32")]
+		{
+			let mut guard = self.inner.lock();
+			let prev = *guard;
+			*guard = prev.wrapping_add(val);
+			prev
+		}
 
-/// Makes the CPU wait for at least `n` microseconds.
-pub fn udelay(n: u32) {
-	// TODO
-	for _ in 0..(n * 100) {
-		unsafe {
-			core::arch::asm!("nop");
+		#[cfg(target_pointer_width = "64")]
+		{
+			self.inner
+				.fetch_add(val, core::sync::atomic::Ordering::Relaxed)
 		}
 	}
 }
 
-/// Makes the CPU wait for at least `n` nanoseconds.
-pub fn ndelay(n: u32) {
-	// TODO
-	udelay(n);
+/// Initializes time management.
+pub fn init() -> EResult<()> {
+	// Initialize hardware clocks
+	let mut hw_clocks = hw::CLOCKS.lock();
+	#[cfg(target_arch = "x86")]
+	{
+		hw_clocks.insert(b"pit".try_into()?, Box::new(hw::pit::PIT::new())?)?;
+		hw_clocks.insert(b"rtc".try_into()?, Box::new(hw::rtc::RTC::new())?)?;
+		// TODO implement HPET
+		// TODO implement APIC timer
+	}
+
+	// Link hardware clock to software clock
+	#[cfg(target_arch = "x86")]
+	{
+		let rtc = hw_clocks.get_mut(b"rtc".as_slice()).unwrap();
+		let freq = Rational::from_frac(1, 1024);
+		rtc.set_frequency(freq);
+
+		let hook = event::register_callback(rtc.get_interrupt_vector(), move |_, _, _, _| {
+			hw::rtc::RTC::reset();
+			// FIXME: the value is probably not right
+			clock::update(i64::from(freq * 1_000_000_000) as _);
+			timer::tick();
+
+			CallbackResult::Continue
+		})?;
+		let _ = ManuallyDrop::new(hook);
+
+		rtc.set_enabled(true);
+	}
+
+	Ok(())
 }

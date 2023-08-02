@@ -8,14 +8,15 @@
 
 #![no_std]
 #![no_main]
-#![feature(array_chunks)]
 #![feature(allow_internal_unstable)]
+#![feature(array_chunks)]
 #![feature(associated_type_defaults)]
 #![feature(coerce_unsized)]
 #![feature(core_intrinsics)]
 #![feature(custom_test_frameworks)]
 #![feature(dispatch_from_dyn)]
 #![feature(exclusive_range_pattern)]
+#![feature(is_sorted)]
 #![feature(lang_items)]
 #![feature(nonzero_ops)]
 #![feature(offset_of)]
@@ -258,9 +259,8 @@ pub extern "C" fn kernel_main(magic: u32, multiboot_ptr: *const c_void) -> ! {
 		kernel_panic!("Bootloader non compliant with Multiboot2!");
 	}
 
-	// Initializing IDT, PIT and events handler
+	// Initializing IDT
 	idt::init();
-	time::timer::pit::init();
 
 	// Ensuring the CPU has SSE
 	if !cpu::sse::is_present() {
@@ -307,6 +307,11 @@ pub extern "C" fn kernel_main(magic: u32, multiboot_ptr: *const c_void) -> ! {
 	// FIXME
 	//println!("Initializing ACPI...");
 	//acpi::init();
+
+	println!("Initializing time management...");
+	if time::init().is_err() {
+		kernel_panic!("failed to initialize time management");
+	}
 
 	// FIXME
 	/*println!("Initializing ramdisks...");
