@@ -1,9 +1,11 @@
 //! This file implements sockets.
 
 use super::Buffer;
+use crate::errno::EResult;
 use crate::errno::Errno;
 use crate::file::buffer::BlockHandler;
 use crate::net::osi;
+use crate::net::osi::Stack;
 use crate::net::SocketDesc;
 use crate::net::SocketDomain;
 use crate::net::SocketType;
@@ -138,7 +140,7 @@ impl Socket {
 	///
 	/// If the socket is already bound, or if the address is invalid, or if the address is already
 	/// in used, the function returns an error.
-	pub fn bind(&mut self, sockaddr: &[u8]) -> Result<(), Errno> {
+	pub fn bind(&mut self, sockaddr: &[u8]) -> EResult<()> {
 		if self.is_bound() {
 			return Err(errno!(EINVAL));
 		}
@@ -148,6 +150,19 @@ impl Socket {
 
 		self.sockname = Vec::from_slice(sockaddr)?;
 		Ok(())
+	}
+
+	// TODO add support for msghdr
+	/// Sends a packet to the specified address.
+	///
+	/// Arguments:
+	/// - `buf` is the buffer with the data
+	/// - `stack` is the stack to use.
+	///
+	/// On success, the function returns the number of bytes sent.
+	pub fn send_with_stack(&mut self, _buf: &[u8], _stack: &Stack) -> EResult<usize> {
+		// TODO
+		todo!()
 	}
 
 	/// Shuts down the receive side of the socket.
@@ -162,7 +177,7 @@ impl Socket {
 }
 
 impl TryDefault for Socket {
-	fn try_default() -> Result<Self, Errno> {
+	fn try_default() -> EResult<Self> {
 		let desc = SocketDesc {
 			domain: SocketDomain::AfUnix,
 			type_: SocketType::SockRaw,
@@ -240,7 +255,7 @@ impl IO for Socket {
 		};
 
 		// TODO
-		todo!();
+		todo!()
 	}
 
 	fn poll(&mut self, _mask: u32) -> Result<u32, Errno> {

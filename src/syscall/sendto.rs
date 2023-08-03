@@ -3,13 +3,12 @@
 use crate::errno::Errno;
 use crate::file::buffer;
 use crate::file::buffer::socket::Socket;
+use crate::net::osi::Stack;
 use crate::process::mem_space::ptr::SyscallSlice;
 use crate::process::Process;
 use core::any::Any;
 use core::ffi::c_int;
 use macros::syscall;
-
-// TODO implement flags
 
 #[syscall]
 pub fn sendto(
@@ -38,18 +37,21 @@ pub fn sendto(
 	let open_file = open_file_mutex.lock();
 	let sock_mutex = buffer::get(open_file.get_location()).ok_or_else(|| errno!(ENOENT))?;
 	let mut sock = sock_mutex.lock();
-	let _sock = (&mut *sock as &mut dyn Any)
+	let sock = (&mut *sock as &mut dyn Any)
 		.downcast_mut::<Socket>()
 		.ok_or_else(|| errno!(ENOTSOCK))?;
 
 	// Get slices
 	let mem_space = proc.get_mem_space().unwrap();
 	let mem_space_guard = mem_space.lock();
-	let _buf_slice = buf.get(&mem_space_guard, len)?.ok_or(errno!(EFAULT))?;
-	let _dest_addr_slice = dest_addr
+	let buf_slice = buf.get(&mem_space_guard, len)?.ok_or(errno!(EFAULT))?;
+	let dest_addr_slice = dest_addr
 		.get(&mem_space_guard, addrlen as _)?
 		.ok_or(errno!(EFAULT))?;
 
-	// TODO
-	todo!()
+	// TODO support flags
+	let stack = Stack::new(sock.desc(), dest_addr_slice)?;
+	let len = sock.send_with_stack(buf_slice, &stack)?;
+
+	Ok(len as _)
 }

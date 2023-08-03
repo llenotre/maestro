@@ -5,6 +5,7 @@ use super::ip;
 use super::SocketDesc;
 use super::SocketDomain;
 use super::SocketType;
+use crate::errno::EResult;
 use crate::errno::Errno;
 use crate::util::boxed::Box;
 use crate::util::container::hashmap::HashMap;
@@ -90,7 +91,8 @@ impl Stack {
 }
 
 /// Registers default domains/types/protocols.
-pub fn init() -> Result<(), Errno> {
+pub fn init() -> EResult<()> {
+	// TODO also register sockaddr type for each domain
 	let domains = HashMap::try_from([
 		// TODO unix
 		(
