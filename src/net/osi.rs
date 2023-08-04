@@ -1,7 +1,11 @@
 //! The Open Systems Interconnection (OSI) model defines the architecure of a network stack.
+//!
+//! This module implements the concept of network stack with protocol layers.
 
-use super::buff::BuffList;
-use super::ip;
+use super::proto;
+use super::proto::ip;
+use super::proto::Layer;
+use super::proto::LayerBuilder;
 use super::SocketDesc;
 use super::SocketDomain;
 use super::SocketType;
@@ -10,26 +14,6 @@ use crate::errno::Errno;
 use crate::util::boxed::Box;
 use crate::util::container::hashmap::HashMap;
 use crate::util::lock::Mutex;
-
-/// An OSI layer.
-///
-/// A layer stack acts as a pipeline, passing data from one layer to the other.
-pub trait Layer {
-	// TODO receive
-
-	/// Transmits data in the given buffer.
-	///
-	/// Arguments:
-	/// - `buff` is the list of buffer which composes the packet being built.
-	/// - `next` is the function called to pass the buffers list to the next layer.
-	fn transmit<'c, F>(&self, buff: BuffList<'c>, next: F) -> Result<(), Errno>
-	where
-		Self: Sized,
-		F: Fn(BuffList<'c>) -> Result<(), Errno>;
-}
-
-/// Function used to build a layer from a given sockaddr structure.
-pub type LayerBuilder = fn(&[u8]) -> Result<Box<dyn Layer>, Errno>;
 
 /// Container of OSI layers 3 (network)
 static DOMAINS: Mutex<HashMap<u32, LayerBuilder>> = Mutex::new(HashMap::new());
@@ -65,7 +49,7 @@ impl Stack {
 			let builder = guard
 				.get(&desc.domain.get_id())
 				.ok_or_else(|| errno!(EINVAL))?;
-			builder(sockaddr)?
+			builder(desc, sockaddr)?
 		};
 
 		let protocol: u32 = if desc.protocol != 0 {
@@ -80,7 +64,7 @@ impl Stack {
 		let protocol = {
 			let guard = PROTOCOLS.lock();
 			let builder = guard.get(&protocol).ok_or_else(|| errno!(EINVAL))?;
-			builder(sockaddr)?
+			builder(desc, sockaddr)?
 		};
 
 		Ok(Stack {
@@ -92,7 +76,6 @@ impl Stack {
 
 /// Registers default domains/types/protocols.
 pub fn init() -> EResult<()> {
-	// TODO also register sockaddr type for each domain
 	let domains = HashMap::try_from([
 		// TODO unix
 		(
@@ -107,6 +90,8 @@ pub fn init() -> EResult<()> {
 		// TODO packet
 	])?;
 	let protocols = HashMap::try_from([
+		// ICMP
+		(1, proto::dummy_build as LayerBuilder),
 		// TODO tcp
 		// TODO udp
 	])?;

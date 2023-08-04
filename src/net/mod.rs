@@ -1,21 +1,16 @@
 //! This module implements the network stack.
 
 pub mod buff;
-pub mod icmp;
-pub mod ip;
 pub mod lo;
 pub mod netlink;
 pub mod osi;
-pub mod sockaddr;
-pub mod tcp;
+pub mod proto;
 
 use crate::errno::Errno;
 use crate::file::Gid;
 use crate::file::Uid;
 use crate::file::ROOT_GID;
 use crate::file::ROOT_UID;
-use crate::net::sockaddr::SockAddrIn;
-use crate::net::sockaddr::SockAddrIn6;
 use crate::util::container::hashmap::HashMap;
 use crate::util::container::string::String;
 use crate::util::container::vec::Vec;
@@ -23,7 +18,6 @@ use crate::util::lock::Mutex;
 use crate::util::ptr::arc::Arc;
 use buff::BuffList;
 use core::cmp::Ordering;
-use core::mem::size_of;
 
 /// Type representing a Media Access Control (MAC) address.
 pub type MAC = [u8; 6];
@@ -260,16 +254,6 @@ impl SocketDomain {
 		match self {
 			Self::AfPacket => uid == ROOT_UID || gid == ROOT_GID,
 			_ => true,
-		}
-	}
-
-	/// Returns the size of the sockaddr structure for the domain.
-	pub fn get_sockaddr_len(&self) -> usize {
-		match self {
-			Self::AfInet => size_of::<SockAddrIn>(),
-			Self::AfInet6 => size_of::<SockAddrIn6>(),
-			// TODO add others
-			_ => 0,
 		}
 	}
 }

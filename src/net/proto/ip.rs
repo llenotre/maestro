@@ -1,10 +1,13 @@
 //! This module implements the IP protocol.
 
-use super::buff::BuffList;
-use super::osi::Layer;
+use super::Layer;
 use crate::crypto::checksum;
 use crate::errno::Errno;
+use crate::net::BuffList;
+use crate::net::SocketDesc;
+use crate::util;
 use crate::util::boxed::Box;
+use core::ffi::c_short;
 use core::mem::size_of;
 use core::slice;
 
@@ -70,31 +73,11 @@ impl IPv4Header {
 	}
 }
 
-/// The IPv6 header (RFC 8200).
-#[repr(C, packed)]
-struct IPv6Header {
-	/// The version, traffic class and flow label.
-	version_traffic_class_flow_label: u32,
-
-	/// The length of the payload.
-	payload_length: u16,
-	/// The type of the next header.
-	next_header: u8,
-	/// The number of hops remaining before discarding the packet.
-	hop_limit: u8,
-
-	/// Source address.
-	src_addr: [u8; 16],
-	/// Destination address.
-	dst_addr: [u8; 16],
-}
-
 /// The network layer for the IPv4 protocol.
 pub struct IPv4Layer {
 	/// The protocol ID.
 	pub protocol: u8,
-
-	/// The destination IPv4.
+	/// The destination IPv4, in big-endian.
 	pub dst_addr: [u8; 4],
 }
 
@@ -136,16 +119,83 @@ impl Layer for IPv4Layer {
 	}
 }
 
-/// Builds an IPv4 layer with the given `sockaddr`.
-pub fn inet_build(_sockaddr: &[u8]) -> Result<Box<dyn Layer>, Errno> {
-	// TODO
-	todo!()
+/// Structure providing connection informations for sockets with IPv4.
+#[repr(C)]
+#[derive(Clone)]
+pub struct SockAddrIn {
+	/// The family of the socket.
+	sin_family: c_short,
+	/// The port on which the connection is to be opened.
+	sin_port: c_short,
+	/// The destination address of the connection.
+	sin_addr: u32,
+	/// Padding.
+	sin_zero: [u8; 8],
 }
 
-// TODO IPv6
+/// Builder for an IPv4 layer.
+pub fn inet_build(desc: &SocketDesc, sockaddr: &[u8]) -> Result<Box<dyn Layer>, Errno> {
+	let sockaddr: &SockAddrIn =
+		unsafe { util::reinterpret(sockaddr) }.ok_or_else(|| errno!(EINVAL))?;
 
-/// Builds an IPv6 layer with the given `sockaddr`.
-pub fn inet6_build(_sockaddr: &[u8]) -> Result<Box<dyn Layer>, Errno> {
+	let protocol = (desc.protocol as u32)
+		.try_into()
+		.map_err(|_| errno!(EINVAL))?;
+	let layer = IPv4Layer {
+		protocol,
+		dst_addr: sockaddr.sin_addr.to_be_bytes(),
+	};
+	Ok(Box::new(layer)? as _)
+}
+
+// TODO IPv6 layer
+
+/// The IPv6 header (RFC 8200).
+#[repr(C, packed)]
+struct IPv6Header {
+	/// The version, traffic class and flow label.
+	version_traffic_class_flow_label: u32,
+
+	/// The length of the payload.
+	payload_length: u16,
+	/// The type of the next header.
+	next_header: u8,
+	/// The number of hops remaining before discarding the packet.
+	hop_limit: u8,
+
+	/// Source address.
+	src_addr: [u8; 16],
+	/// Destination address.
+	dst_addr: [u8; 16],
+}
+
+/// Structure representing an IPv6 address.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union In6Addr {
+	__s6_addr: [u8; 16],
+	__s6_addr16: [u16; 8],
+	__s6_addr32: [u32; 4],
+}
+
+/// Structure providing connection informations for sockets with IPv6.
+#[repr(C)]
+#[derive(Clone)]
+pub struct SockAddrIn6 {
+	/// The family of the socket.
+	sin6_family: c_short,
+	/// The port on which the connection is to be opened.
+	sin6_port: c_short,
+	/// TODO doc
+	sin6_flowinfo: u32,
+	/// The destination address of the connection.
+	sin6_addr: In6Addr,
+	/// TODO doc
+	sin6_scope_id: u32,
+}
+
+/// Builder for an IPv6 layer.
+pub fn inet6_build(_desc: &SocketDesc, _sockaddr: &[u8]) -> Result<Box<dyn Layer>, Errno> {
 	// TODO
 	todo!()
 }
