@@ -4,8 +4,9 @@ use super::Buffer;
 use crate::errno::EResult;
 use crate::errno::Errno;
 use crate::file::buffer::BlockHandler;
+use crate::net::buff::BuffList;
 use crate::net::osi;
-use crate::net::osi::Stack;
+use crate::net::osi::TransmitPipeline;
 use crate::net::SocketDesc;
 use crate::net::SocketDomain;
 use crate::net::SocketType;
@@ -33,8 +34,8 @@ const SOL_SOCKET: c_int = 1;
 pub struct Socket {
 	/// The socket's stack descriptor.
 	desc: SocketDesc,
-	/// The socket's network stack corresponding to the descriptor.
-	stack: Option<osi::Stack>,
+	/// The socket's transmit pipeline.
+	transmit_pipeline: Option<osi::TransmitPipeline>,
 
 	/// The buffer containing received data. If `None`, reception has been shutdown.
 	receive_buffer: Option<RingBuffer<u8, Vec<u8>>>,
@@ -57,7 +58,7 @@ impl Socket {
 	pub fn new(desc: SocketDesc) -> Result<Arc<Mutex<Self>>, Errno> {
 		Arc::new(Mutex::new(Self {
 			desc,
-			stack: None,
+			transmit_pipeline: None,
 
 			receive_buffer: Some(RingBuffer::new(crate::vec![0; BUFFER_SIZE]?)),
 			transmit_buffer: Some(RingBuffer::new(crate::vec![0; BUFFER_SIZE]?)),
@@ -76,10 +77,10 @@ impl Socket {
 		&self.desc
 	}
 
-	/// Returns the socket's network stack.
+	/// Returns the socket's transmit pipeline.
 	#[inline(always)]
-	pub fn stack(&self) -> Option<&osi::Stack> {
-		self.stack.as_ref()
+	pub fn transmit_pipeline(&self) -> Option<&osi::TransmitPipeline> {
+		self.transmit_pipeline.as_ref()
 	}
 
 	/// Reads the given socket option.
@@ -153,16 +154,20 @@ impl Socket {
 	}
 
 	// TODO add support for msghdr
-	/// Sends a packet to the specified address.
+	/// Sends a packet with the specified pipeline.
 	///
 	/// Arguments:
 	/// - `buf` is the buffer with the data
-	/// - `stack` is the stack to use.
+	/// - `pipeline` is the transmit pipeline to use.
 	///
 	/// On success, the function returns the number of bytes sent.
-	pub fn send_with_stack(&mut self, _buf: &[u8], _stack: &Stack) -> EResult<usize> {
-		// TODO
-		todo!()
+	pub fn send_with_pipeline(
+		&mut self,
+		buf: &[u8],
+		pipeline: &TransmitPipeline,
+	) -> EResult<usize> {
+		pipeline.transmit(BuffList::from(buf))?;
+		Ok(buf.len())
 	}
 
 	/// Shuts down the receive side of the socket.
@@ -186,7 +191,7 @@ impl TryDefault for Socket {
 
 		Ok(Self {
 			desc,
-			stack: None,
+			transmit_pipeline: None,
 
 			receive_buffer: Some(RingBuffer::new(crate::vec![0; BUFFER_SIZE]?)),
 			transmit_buffer: Some(RingBuffer::new(crate::vec![0; BUFFER_SIZE]?)),
@@ -250,7 +255,7 @@ impl IO for Socket {
 	/// Note: This implemention ignores the offset.
 	fn write(&mut self, _: u64, _buf: &[u8]) -> Result<u64, Errno> {
 		// A destination address is required
-		let Some(_stack) = self.stack.as_ref() else {
+		let Some(_pipeline) = self.transmit_pipeline.as_ref() else {
 			return Err(errno!(EDESTADDRREQ));
 		};
 

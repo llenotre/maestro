@@ -1,10 +1,12 @@
 //! The Transmission Control Protocol (TCP) is a protocol transmitting sequenced, reliable,
 //! two-way, connection-based byte streams.
 
-use crate::errno::Errno;
-use crate::file::buffer::socket::Socket;
-use crate::net::proto::Layer;
+use super::TransmitBuilder;
+use crate::errno::EResult;
+use crate::net::osi::TransmitPipeline;
 use crate::net::BuffList;
+use crate::net::SocketDesc;
+use crate::util::boxed::Box;
 
 /// The TCP segment header.
 #[repr(C, packed)]
@@ -35,21 +37,17 @@ pub struct TCPHdr {
 	urg_ptr: u16,
 }
 
-/// The network layer for the TCP protocol.
-pub struct TCPLayer {}
+/// A builder for TCP packets.
+pub struct TCPBuilder {}
 
-impl Layer for TCPLayer {
-	fn transmit<'c, F>(&self, _buff: BuffList<'c>, _next: F) -> Result<(), Errno>
-	where
-		F: Fn(BuffList<'c>) -> Result<(), Errno>,
-	{
+impl TransmitBuilder for TCPBuilder {
+	fn new(_desc: &SocketDesc, _sockaddr: &[u8]) -> EResult<Box<dyn TransmitBuilder>> {
 		// TODO
 		todo!();
 	}
-}
 
-/// Initiates a TCP connection on the given socket `sock`.
-pub fn init_connection(_sock: &mut Socket) -> Result<(), Errno> {
-	// TODO
-	todo!();
+	fn transmit<'chunk>(&self, _buff: BuffList<'chunk>, _next: &TransmitPipeline) -> EResult<()> {
+		// TODO
+		todo!();
+	}
 }

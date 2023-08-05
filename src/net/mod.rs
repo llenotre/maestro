@@ -22,8 +22,6 @@ use core::cmp::Ordering;
 /// Type representing a Media Access Control (MAC) address.
 pub type MAC = [u8; 6];
 
-// TODO allow implementation of custom protocols
-
 /// An enumeration of network address types.
 #[derive(Debug, Eq, PartialEq)]
 pub enum Address {
@@ -196,12 +194,12 @@ pub fn get_iface(name: &[u8]) -> Option<Arc<Mutex<dyn Interface>>> {
 }
 
 /// Returns the network interface to be used to transmit a packet to the given destination address.
-pub fn get_iface_for(addr: Address) -> Option<Arc<Mutex<dyn Interface>>> {
+pub fn get_iface_for(addr: &Address) -> Option<Arc<Mutex<dyn Interface>>> {
 	let routing_table = ROUTING_TABLE.lock();
 	let route = routing_table
 		.iter()
-		.filter(|route| route.is_matching(&addr))
-		.max_by(|a, b| a.cmp_for(&b, &addr))?;
+		.filter(|route| route.is_matching(addr))
+		.max_by(|a, b| a.cmp_for(&b, addr))?;
 
 	get_iface(&route.iface)
 }

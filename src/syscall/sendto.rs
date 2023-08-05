@@ -3,7 +3,7 @@
 use crate::errno::Errno;
 use crate::file::buffer;
 use crate::file::buffer::socket::Socket;
-use crate::net::osi::Stack;
+use crate::net::osi::TransmitPipeline;
 use crate::process::mem_space::ptr::SyscallSlice;
 use crate::process::Process;
 use core::any::Any;
@@ -50,8 +50,8 @@ pub fn sendto(
 		.ok_or(errno!(EFAULT))?;
 
 	// TODO support flags
-	let stack = Stack::new(sock.desc(), dest_addr_slice)?;
-	let len = sock.send_with_stack(buf_slice, &stack)?;
+	let pipeline = TransmitPipeline::new(sock.desc(), dest_addr_slice)?;
+	let len = sock.send_with_pipeline(buf_slice, &pipeline)?;
 
 	Ok(len as _)
 }

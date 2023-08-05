@@ -1,8 +1,9 @@
 //! This module implements the IP protocol.
 
-use super::Layer;
+use super::TransmitBuilder;
 use crate::crypto::checksum;
-use crate::errno::Errno;
+use crate::errno::EResult;
+use crate::net::osi::TransmitPipeline;
 use crate::net::BuffList;
 use crate::net::SocketDesc;
 use crate::util;
@@ -73,19 +74,33 @@ impl IPv4Header {
 	}
 }
 
-/// The network layer for the IPv4 protocol.
-pub struct IPv4Layer {
+/// A builder for IPv4 packets.
+pub struct IPv4Builder {
 	/// The protocol ID.
 	pub protocol: u8,
 	/// The destination IPv4, in big-endian.
 	pub dst_addr: [u8; 4],
 }
 
-impl Layer for IPv4Layer {
-	fn transmit<'c, F>(&self, mut buff: BuffList<'c>, next: F) -> Result<(), Errno>
-	where
-		F: Fn(BuffList<'c>) -> Result<(), Errno>,
-	{
+impl TransmitBuilder for IPv4Builder {
+	fn new(desc: &SocketDesc, sockaddr: &[u8]) -> EResult<Box<dyn TransmitBuilder>> {
+		let sockaddr: &SockAddrIn =
+			unsafe { util::reinterpret(sockaddr) }.ok_or_else(|| errno!(EINVAL))?;
+
+		let protocol = (desc.protocol as u32)
+			.try_into()
+			.map_err(|_| errno!(EINVAL))?;
+		Ok(Box::new(Self {
+			protocol,
+			dst_addr: sockaddr.sin_addr.to_be_bytes(),
+		})? as _)
+	}
+
+	fn transmit<'chunk>(
+		&self,
+		mut buff: BuffList<'chunk>,
+		next: &TransmitPipeline,
+	) -> EResult<()> {
 		let hdr_len = size_of::<IPv4Header>() as u16; // TODO add options support?
 
 		let dscp = 0; // TODO
@@ -115,7 +130,7 @@ impl Layer for IPv4Layer {
 		};
 
 		buff.push_front(hdr_buff.into());
-		next(buff)
+		next.transmit(buff)
 	}
 }
 
@@ -133,22 +148,7 @@ pub struct SockAddrIn {
 	sin_zero: [u8; 8],
 }
 
-/// Builder for an IPv4 layer.
-pub fn inet_build(desc: &SocketDesc, sockaddr: &[u8]) -> Result<Box<dyn Layer>, Errno> {
-	let sockaddr: &SockAddrIn =
-		unsafe { util::reinterpret(sockaddr) }.ok_or_else(|| errno!(EINVAL))?;
-
-	let protocol = (desc.protocol as u32)
-		.try_into()
-		.map_err(|_| errno!(EINVAL))?;
-	let layer = IPv4Layer {
-		protocol,
-		dst_addr: sockaddr.sin_addr.to_be_bytes(),
-	};
-	Ok(Box::new(layer)? as _)
-}
-
-// TODO IPv6 layer
+// TODO IPv6 builder
 
 /// The IPv6 header (RFC 8200).
 #[repr(C, packed)]
@@ -192,10 +192,4 @@ pub struct SockAddrIn6 {
 	sin6_addr: In6Addr,
 	/// TODO doc
 	sin6_scope_id: u32,
-}
-
-/// Builder for an IPv6 layer.
-pub fn inet6_build(_desc: &SocketDesc, _sockaddr: &[u8]) -> Result<Box<dyn Layer>, Errno> {
-	// TODO
-	todo!()
 }

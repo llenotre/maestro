@@ -1,47 +1,48 @@
-//! This module implements layers for different protocols.
+//! This module implements network protocols.
 
 pub mod ip;
 pub mod tcp;
 
+use super::osi::TransmitPipeline;
+use super::BuffList;
+use super::SocketDesc;
 use crate::errno::EResult;
-use crate::net::BuffList;
-use crate::net::SocketDesc;
 use crate::util::boxed::Box;
 
-/// An OSI layer.
-///
-/// A layer stack acts as a pipeline, passing data from one layer to the other.
-pub trait Layer {
-	// TODO receive
+/// Trait representing an object which builds a packet according to a specific protocol.
+pub trait TransmitBuilder {
+	/// Creates a new builder.
+	///
+	/// Arguments:
+	/// - `desc` is the socket descriptor.
+	/// - `sockaddr` is a buffer representing the socket address.
+	///
+	/// If the given parameters are invalid, the function returns an error.
+	fn new(desc: &SocketDesc, sockaddr: &[u8]) -> EResult<Box<dyn TransmitBuilder>>
+	where
+		Self: Sized;
 
 	/// Transmits data in the given buffer.
 	///
 	/// Arguments:
 	/// - `buff` is the list of buffer which composes the packet being built.
-	/// - `next` is the function called to pass the buffers list to the next layer.
-	fn transmit<'c, F>(&self, buff: BuffList<'c>, next: F) -> EResult<()>
-	where
-		Self: Sized,
-		F: Fn(BuffList<'c>) -> EResult<()>;
+	/// - `next` is the rest of the pipeline to which the build packet is passed.
+	fn transmit(&self, buff: BuffList<'_>, next: &TransmitPipeline) -> EResult<()>;
 }
 
-/// Function used to build a layer from a given sockaddr structure.
-pub type LayerBuilder = fn(&SocketDesc, &[u8]) -> EResult<Box<dyn Layer>>;
+/// Packet builder constructor.
+pub type TransmitBuilderCtor = fn(&SocketDesc, &[u8]) -> EResult<Box<dyn TransmitBuilder>>;
 
 /// The dummy layer is a simple network layer which does nothing and just passes data to the next
 /// layer.
-pub struct DummyLayer {}
+pub struct DummyBuilder {}
 
-impl Layer for DummyLayer {
-	fn transmit<'c, F>(&self, buff: BuffList<'c>, next: F) -> EResult<()>
-	where
-		F: Fn(BuffList<'c>) -> EResult<()>,
-	{
-		next(buff)
+impl TransmitBuilder for DummyBuilder {
+	fn new(_desc: &SocketDesc, _sockaddr: &[u8]) -> EResult<Box<dyn TransmitBuilder>> {
+		Ok(Box::new(DummyBuilder {})? as _)
 	}
-}
 
-/// Builder for a dummy layer.
-pub fn dummy_build(_desc: &SocketDesc, _sockaddr: &[u8]) -> EResult<Box<dyn Layer>> {
-	Ok(Box::new(DummyLayer {})? as _)
+	fn transmit<'chunk>(&self, buff: BuffList<'chunk>, next: &TransmitPipeline) -> EResult<()> {
+		next.transmit(buff)
+	}
 }

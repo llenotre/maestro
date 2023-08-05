@@ -2,54 +2,79 @@
 //!
 //! This module implements the concept of network stack with protocol layers.
 
-use super::proto;
-use super::proto::ip;
-use super::proto::Layer;
-use super::proto::LayerBuilder;
+use super::proto::ip::IPv4Builder;
+use super::proto::DummyBuilder;
+use super::proto::TransmitBuilder;
+use super::proto::TransmitBuilderCtor;
+use super::BuffList;
 use super::SocketDesc;
 use super::SocketDomain;
 use super::SocketType;
 use crate::errno::EResult;
-use crate::errno::Errno;
 use crate::util::boxed::Box;
 use crate::util::container::hashmap::HashMap;
 use crate::util::lock::Mutex;
 
 /// Container of OSI layers 3 (network)
-static DOMAINS: Mutex<HashMap<u32, LayerBuilder>> = Mutex::new(HashMap::new());
+static DOMAINS: Mutex<HashMap<u32, TransmitBuilderCtor>> = Mutex::new(HashMap::new());
 /// Container of OSI layers 4 (transport)
-static PROTOCOLS: Mutex<HashMap<u32, LayerBuilder>> = Mutex::new(HashMap::new());
+static PROTOCOLS: Mutex<HashMap<u32, TransmitBuilderCtor>> = Mutex::new(HashMap::new());
 
 /// Container of default protocols ID for domain/type pairs.
 ///
 /// If this container doesn't contain a pair, it is considered invalid.
 static DEFAULT_PROTOCOLS: Mutex<HashMap<(u32, SocketType), u32>> = Mutex::new(HashMap::new());
 
-/// A stack of layers for a socket.
-pub struct Stack {
-	/// The socket's protocol on OSI layer 3.
-	pub domain: Box<dyn Layer>,
-	/// The socket's protocol on OSI layer 4.
-	pub protocol: Box<dyn Layer>,
+/// A pipeline used to build a packet.
+///
+/// This enumeration acts as a linked list of protocol layers which are called one after the other.
+pub enum TransmitPipeline {
+	/// Wraps data from the previous layer into a packet according to the protocol associated with
+	/// the current layer, then passes the result to the next layer.
+	Wrap {
+		/// The current layer.
+		curr: Box<dyn TransmitBuilder>,
+		/// The next layer.
+		next: Box<TransmitPipeline>,
+	},
+	/// Transmits the packet.
+	Flush {
+		// TODO
+	},
 }
 
-impl Stack {
-	/// Creates a new socket network stack.
+impl TransmitPipeline {
+	pub fn transmit(&self, buff: BuffList<'_>) -> EResult<()> {
+		match self {
+			Self::Wrap {
+				curr,
+				next,
+			} => curr.transmit(buff, next),
+
+			Self::Flush {} => {
+				// TODO
+				todo!()
+			}
+		}
+	}
+}
+
+impl TransmitPipeline {
+	/// Creates a new transmit pipeline.
 	///
 	/// Arguments:
 	/// - `desc` is the descriptor of the socket.
-	/// - `sockaddr` is the socket address structure containing informations to initialize the
-	/// stack.
+	/// - `sockaddr` is a buffer representing the socket address structure.
 	///
 	/// If the descriptor is invalid or if the stack cannot be created, the function returns an
 	/// error.
-	pub fn new(desc: &SocketDesc, sockaddr: &[u8]) -> Result<Stack, Errno> {
+	pub fn new(desc: &SocketDesc, sockaddr: &[u8]) -> EResult<Self> {
 		let domain = {
 			let guard = DOMAINS.lock();
-			let builder = guard
+			let ctor = guard
 				.get(&desc.domain.get_id())
 				.ok_or_else(|| errno!(EINVAL))?;
-			builder(desc, sockaddr)?
+			ctor(desc, sockaddr)?
 		};
 
 		let protocol: u32 = if desc.protocol != 0 {
@@ -63,13 +88,16 @@ impl Stack {
 		};
 		let protocol = {
 			let guard = PROTOCOLS.lock();
-			let builder = guard.get(&protocol).ok_or_else(|| errno!(EINVAL))?;
-			builder(desc, sockaddr)?
+			let ctor = guard.get(&protocol).ok_or_else(|| errno!(EINVAL))?;
+			ctor(desc, sockaddr)?
 		};
 
-		Ok(Stack {
-			domain,
-			protocol,
+		Ok(Self::Wrap {
+			curr: protocol,
+			next: Box::new(Self::Wrap {
+				curr: domain,
+				next: Box::new(Self::Flush {})?,
+			})?,
 		})
 	}
 }
@@ -80,18 +108,15 @@ pub fn init() -> EResult<()> {
 		// TODO unix
 		(
 			SocketDomain::AfInet.get_id(),
-			ip::inet_build as LayerBuilder,
+			IPv4Builder::new as TransmitBuilderCtor,
 		),
-		(
-			SocketDomain::AfInet6.get_id(),
-			ip::inet6_build as LayerBuilder,
-		),
+		// TODO inet6
 		// TODO netlink
 		// TODO packet
 	])?;
 	let protocols = HashMap::try_from([
 		// ICMP
-		(1, proto::dummy_build as LayerBuilder),
+		(1, DummyBuilder::new as TransmitBuilderCtor),
 		// TODO tcp
 		// TODO udp
 	])?;
