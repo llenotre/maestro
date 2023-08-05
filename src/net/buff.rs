@@ -1,22 +1,20 @@
-//! TODO doc
+//! Buffers for the network stack.
 
 use core::ptr::NonNull;
 
-/// A linked-list of buffers representing a packet being built.
-///
-/// This structure works without any memory allocations and relies entirely on lifetimes.
-pub struct BuffList<'b> {
+/// A linked-list of buffers with no memory allocation, relying entirely on lifetimes.
+pub struct BuffList<'buff> {
 	/// The buffer.
-	b: &'b [u8],
+	b: &'buff [u8],
 
 	/// The next buffer in the list.
-	next: Option<NonNull<BuffList<'b>>>,
+	next: Option<NonNull<BuffList<'buff>>>,
 	/// The length of following buffers combined.
 	next_len: usize,
 }
 
-impl<'b> From<&'b [u8]> for BuffList<'b> {
-	fn from(b: &'b [u8]) -> Self {
+impl<'buff> From<&'buff [u8]> for BuffList<'buff> {
+	fn from(b: &'buff [u8]) -> Self {
 		Self {
 			b,
 
@@ -26,7 +24,7 @@ impl<'b> From<&'b [u8]> for BuffList<'b> {
 	}
 }
 
-impl<'b> BuffList<'b> {
+impl<'buff> BuffList<'buff> {
 	/// Returns the length of the buffer, plus following buffers.
 	pub fn len(&self) -> usize {
 		self.b.len() + self.next_len
@@ -35,9 +33,9 @@ impl<'b> BuffList<'b> {
 	/// Pushes another buffer at the front of the current list.
 	///
 	/// The function returns the new head of the list (which is the given `front`).
-	pub fn push_front<'o>(&mut self, mut front: BuffList<'o>) -> BuffList<'o>
+	pub fn push_front<'other>(&mut self, mut front: BuffList<'other>) -> BuffList<'other>
 	where
-		'b: 'o,
+		'buff: 'other,
 	{
 		front.next = NonNull::new(self);
 		front.next_len = self.b.len() + self.next_len;

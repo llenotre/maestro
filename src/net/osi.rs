@@ -28,6 +28,7 @@ static DEFAULT_PROTOCOLS: Mutex<HashMap<(u32, SocketType), u32>> = Mutex::new(Ha
 /// A pipeline used to build a packet.
 ///
 /// This enumeration acts as a linked list of protocol layers which are called one after the other.
+/// Each instance represents a layer and points to the next.
 pub enum TransmitPipeline {
 	/// Wraps data from the previous layer into a packet according to the protocol associated with
 	/// the current layer, then passes the result to the next layer.
