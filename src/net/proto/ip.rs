@@ -4,8 +4,12 @@ use super::TransmitBuilder;
 use crate::crypto::checksum;
 use crate::errno::EResult;
 use crate::net::osi::TransmitPipeline;
+use crate::net::sockaddr;
+use crate::net::sockaddr::SockAddr;
+use crate::net::Address;
 use crate::net::BuffList;
 use crate::net::SocketDesc;
+use crate::net::SocketDomain;
 use crate::util;
 use crate::util::boxed::Box;
 use core::ffi::c_short;
@@ -83,16 +87,17 @@ pub struct IPv4Builder {
 }
 
 impl TransmitBuilder for IPv4Builder {
-	fn new(desc: &SocketDesc, sockaddr: &[u8]) -> EResult<Box<dyn TransmitBuilder>> {
-		let sockaddr: &SockAddrIn =
-			unsafe { util::reinterpret(sockaddr) }.ok_or_else(|| errno!(EINVAL))?;
-
+	fn new(desc: &SocketDesc, sockaddr: &dyn SockAddr) -> EResult<Box<dyn TransmitBuilder>> {
 		let protocol = (desc.protocol as u32)
 			.try_into()
 			.map_err(|_| errno!(EINVAL))?;
+		let Some(Address::IPv4(address)) = sockaddr.get_address() else {
+            return Err(errno!(EINVAL));
+        };
+
 		Ok(Box::new(Self {
 			protocol,
-			dst_addr: sockaddr.sin_addr.to_be_bytes(),
+			dst_addr: address.map(u8::to_be),
 		})? as _)
 	}
 
@@ -148,6 +153,26 @@ pub struct SockAddrIn {
 	sin_zero: [u8; 8],
 }
 
+impl SockAddr for SockAddrIn {
+	fn from_bytes<'b>(buf: &'b [u8]) -> EResult<&'b dyn SockAddr> {
+		let family = sockaddr::extract_family(buf).ok_or_else(|| errno!(EINVAL))?;
+		if family != SocketDomain::AfInet.get_id() as _ {
+			return Err(errno!(EINVAL));
+		}
+
+		let sockaddr: &Self = unsafe { util::reinterpret(buf) }.ok_or_else(|| errno!(EINVAL))?;
+		Ok(sockaddr as _)
+	}
+
+	fn get_address(&self) -> Option<Address> {
+		Some(Address::IPv4(self.sin_addr.to_ne_bytes()))
+	}
+
+	fn get_port(&self) -> Option<u16> {
+		Some(self.sin_port as _)
+	}
+}
+
 // TODO IPv6 builder
 
 /// The IPv6 header (RFC 8200).
@@ -169,15 +194,6 @@ struct IPv6Header {
 	dst_addr: [u8; 16],
 }
 
-/// Structure representing an IPv6 address.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub union In6Addr {
-	__s6_addr: [u8; 16],
-	__s6_addr16: [u16; 8],
-	__s6_addr32: [u32; 4],
-}
-
 /// Structure providing connection informations for sockets with IPv6.
 #[repr(C)]
 #[derive(Clone)]
@@ -189,7 +205,27 @@ pub struct SockAddrIn6 {
 	/// TODO doc
 	sin6_flowinfo: u32,
 	/// The destination address of the connection.
-	sin6_addr: In6Addr,
+	sin6_addr: [u8; 16],
 	/// TODO doc
 	sin6_scope_id: u32,
+}
+
+impl SockAddr for SockAddrIn6 {
+	fn from_bytes<'b>(buf: &'b [u8]) -> EResult<&'b dyn SockAddr> {
+		let family = sockaddr::extract_family(buf).ok_or_else(|| errno!(EINVAL))?;
+		if family != SocketDomain::AfInet6.get_id() as _ {
+			return Err(errno!(EINVAL));
+		}
+
+		let sockaddr: &Self = unsafe { util::reinterpret(buf) }.ok_or_else(|| errno!(EINVAL))?;
+		Ok(sockaddr as _)
+	}
+
+	fn get_address(&self) -> Option<Address> {
+		Some(Address::IPv6(self.sin6_addr))
+	}
+
+	fn get_port(&self) -> Option<u16> {
+		Some(self.sin6_port as _)
+	}
 }

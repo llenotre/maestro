@@ -3,9 +3,12 @@
 //! This module implements the concept of network stack with protocol layers.
 
 use super::proto::ip::IPv4Builder;
+use super::proto::ip::SockAddrIn;
 use super::proto::DummyBuilder;
 use super::proto::TransmitBuilder;
 use super::proto::TransmitBuilderCtor;
+use super::sockaddr::SockAddr;
+use super::sockaddr::SockAddrCtor;
 use super::BuffList;
 use super::SocketDesc;
 use super::SocketDomain;
@@ -14,16 +17,6 @@ use crate::errno::EResult;
 use crate::util::boxed::Box;
 use crate::util::container::hashmap::HashMap;
 use crate::util::lock::Mutex;
-
-/// Container of OSI layers 3 (network)
-static DOMAINS: Mutex<HashMap<u32, TransmitBuilderCtor>> = Mutex::new(HashMap::new());
-/// Container of OSI layers 4 (transport)
-static PROTOCOLS: Mutex<HashMap<u32, TransmitBuilderCtor>> = Mutex::new(HashMap::new());
-
-/// Container of default protocols ID for domain/type pairs.
-///
-/// If this container doesn't contain a pair, it is considered invalid.
-static DEFAULT_PROTOCOLS: Mutex<HashMap<(u32, SocketType), u32>> = Mutex::new(HashMap::new());
 
 /// A pipeline used to build a packet.
 ///
@@ -45,34 +38,18 @@ pub enum TransmitPipeline {
 }
 
 impl TransmitPipeline {
-	pub fn transmit(&self, buff: BuffList<'_>) -> EResult<()> {
-		match self {
-			Self::Wrap {
-				curr,
-				next,
-			} => curr.transmit(buff, next),
-
-			Self::Flush {} => {
-				// TODO
-				todo!()
-			}
-		}
-	}
-}
-
-impl TransmitPipeline {
 	/// Creates a new transmit pipeline.
 	///
 	/// Arguments:
-	/// - `desc` is the descriptor of the socket.
-	/// - `sockaddr` is a buffer representing the socket address structure.
+	/// - `desc` is the descriptor of the socket
+	/// - `sockaddr` is the socket address
 	///
 	/// If the descriptor is invalid or if the stack cannot be created, the function returns an
 	/// error.
-	pub fn new(desc: &SocketDesc, sockaddr: &[u8]) -> EResult<Self> {
+	pub fn new(desc: &SocketDesc, sockaddr: &dyn SockAddr) -> EResult<Self> {
 		let domain = {
 			let guard = DOMAINS.lock();
-			let ctor = guard
+			let (ctor, _) = guard
 				.get(&desc.domain.get_id())
 				.ok_or_else(|| errno!(EINVAL))?;
 			ctor(desc, sockaddr)?
@@ -101,7 +78,32 @@ impl TransmitPipeline {
 			})?,
 		})
 	}
+
+	/// Transmits the given buffer using the pipeline.
+	pub fn transmit(&self, buff: BuffList<'_>) -> EResult<()> {
+		match self {
+			Self::Wrap {
+				curr,
+				next,
+			} => curr.transmit(buff, next),
+
+			Self::Flush {} => {
+				// TODO
+				todo!()
+			}
+		}
+	}
 }
+
+/// Container of OSI layers 3 (network)
+pub(crate) static DOMAINS: Mutex<HashMap<u32, (TransmitBuilderCtor, SockAddrCtor)>> =
+	Mutex::new(HashMap::new());
+/// Container of OSI layers 4 (transport)
+static PROTOCOLS: Mutex<HashMap<u32, TransmitBuilderCtor>> = Mutex::new(HashMap::new());
+/// Container of default protocols ID for domain/type pairs.
+///
+/// If this container doesn't contain a pair, it is considered invalid.
+static DEFAULT_PROTOCOLS: Mutex<HashMap<(u32, SocketType), u32>> = Mutex::new(HashMap::new());
 
 /// Registers default domains/types/protocols.
 pub fn init() -> EResult<()> {
@@ -109,7 +111,10 @@ pub fn init() -> EResult<()> {
 		// TODO unix
 		(
 			SocketDomain::AfInet.get_id(),
-			IPv4Builder::new as TransmitBuilderCtor,
+			(
+				IPv4Builder::new as TransmitBuilderCtor,
+				SockAddrIn::from_bytes as SockAddrCtor,
+			),
 		),
 		// TODO inet6
 		// TODO netlink

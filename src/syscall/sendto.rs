@@ -4,6 +4,7 @@ use crate::errno::Errno;
 use crate::file::buffer;
 use crate::file::buffer::socket::Socket;
 use crate::net::osi::TransmitPipeline;
+use crate::net::sockaddr;
 use crate::process::mem_space::ptr::SyscallSlice;
 use crate::process::Process;
 use core::any::Any;
@@ -41,16 +42,20 @@ pub fn sendto(
 		.downcast_mut::<Socket>()
 		.ok_or_else(|| errno!(ENOTSOCK))?;
 
-	// Get slices
 	let mem_space = proc.get_mem_space().unwrap();
 	let mem_space_guard = mem_space.lock();
+
+	// Get buffer
 	let buf_slice = buf.get(&mem_space_guard, len)?.ok_or(errno!(EFAULT))?;
+
+	// Get sockaddr
 	let dest_addr_slice = dest_addr
 		.get(&mem_space_guard, addrlen as _)?
 		.ok_or(errno!(EFAULT))?;
+	let dest_addr = sockaddr::from_bytes(dest_addr_slice)?;
 
 	// TODO support flags
-	let pipeline = TransmitPipeline::new(sock.desc(), dest_addr_slice)?;
+	let pipeline = TransmitPipeline::new(sock.desc(), dest_addr)?;
 	let len = sock.send_with_pipeline(buf_slice, &pipeline)?;
 
 	Ok(len as _)

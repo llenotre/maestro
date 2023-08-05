@@ -4,6 +4,7 @@
 use super::TransmitBuilder;
 use crate::errno::EResult;
 use crate::net::osi::TransmitPipeline;
+use crate::net::sockaddr::SockAddr;
 use crate::net::BuffList;
 use crate::net::SocketDesc;
 use crate::util::boxed::Box;
@@ -41,7 +42,7 @@ pub struct TCPHdr {
 pub struct TCPBuilder {}
 
 impl TransmitBuilder for TCPBuilder {
-	fn new(_desc: &SocketDesc, _sockaddr: &[u8]) -> EResult<Box<dyn TransmitBuilder>> {
+	fn new(_desc: &SocketDesc, _sockaddr: &dyn SockAddr) -> EResult<Box<dyn TransmitBuilder>> {
 		// TODO
 		todo!();
 	}

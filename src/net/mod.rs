@@ -5,6 +5,7 @@ pub mod lo;
 pub mod netlink;
 pub mod osi;
 pub mod proto;
+pub mod sockaddr;
 
 use crate::errno::Errno;
 use crate::file::Gid;
@@ -237,7 +238,7 @@ impl TryFrom<u32> for SocketDomain {
 
 impl SocketDomain {
 	/// Returns the associated ID.
-	pub fn get_id(&self) -> u32 {
+	pub const fn get_id(&self) -> u32 {
 		match self {
 			Self::AfUnix => 1,
 			Self::AfInet => 2,
@@ -287,7 +288,7 @@ impl TryFrom<u32> for SocketType {
 
 impl SocketType {
 	/// Returns the associated ID.
-	pub fn get_id(&self) -> u32 {
+	pub const fn get_id(&self) -> u32 {
 		match self {
 			Self::SockStream => 1,
 			Self::SockDgram => 2,
