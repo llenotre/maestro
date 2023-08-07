@@ -86,12 +86,12 @@ pub trait Interface {
 	/// Reads data from the network interface and writes it into `buff`.
 	///
 	/// The function returns the number of bytes read.
-	fn read(&mut self, buff: &mut [u8]) -> Result<u64, Errno>;
+	fn read(&mut self, buff: &mut [u8]) -> Result<(), Errno>;
 
 	/// Reads data from `buff` and writes it into the network interface.
 	///
 	/// The function returns the number of bytes written.
-	fn write(&mut self, buff: &BuffList<'_>) -> Result<u64, Errno>;
+	fn write(&mut self, buff: &BuffList<'_>) -> Result<(), Errno>;
 }
 
 /// An entry in the routing table.

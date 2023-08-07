@@ -39,12 +39,12 @@ impl Interface for LocalLoopback {
 		]
 	}
 
-	fn read(&mut self, _buff: &mut [u8]) -> Result<u64, Errno> {
+	fn read(&mut self, _buff: &mut [u8]) -> Result<(), Errno> {
 		// TODO Write to ring buffer
 		todo!();
 	}
 
-	fn write(&mut self, _buff: &BuffList<'_>) -> Result<u64, Errno> {
+	fn write(&mut self, _buff: &BuffList<'_>) -> Result<(), Errno> {
 		// TODO Read from ring buffer
 		todo!();
 	}

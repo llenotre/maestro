@@ -93,10 +93,22 @@ impl<'addr> TransmitPipeline<'addr> {
 			} => curr.transmit(buff, next),
 
 			Self::Flush {
-				sockaddr: _,
+				sockaddr,
 			} => {
-				// TODO
-				todo!()
+				match sockaddr.as_ref().get_address() {
+					Some(addr) => {
+						let Some(route_mutex) = super::get_iface_for(&addr) else {
+                            return Err(errno!(EHOSTUNREACH));
+                        };
+						let mut route = route_mutex.lock();
+						route.write(&buff)
+					}
+
+					None => {
+						// TODO
+						todo!()
+					}
+				}
 			}
 		}
 	}
