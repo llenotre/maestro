@@ -144,11 +144,10 @@ impl<T: ?Sized> DerefMut for Box<T> {
 	}
 }
 
-impl<T: ?Sized + Clone> TryClone for Box<T> {
+impl<T: TryClone + Sized> TryClone for Box<T> {
 	fn try_clone(&self) -> Result<Self, Errno> {
 		let obj = unsafe { &*self.ptr.as_ptr() };
-
-		Box::new(obj.clone())
+		Box::new(obj.try_clone()?)
 	}
 }
 

@@ -16,28 +16,31 @@ use super::SocketType;
 use crate::errno::EResult;
 use crate::util::boxed::Box;
 use crate::util::container::hashmap::HashMap;
+use crate::util::dyn_traits::DynOwnership;
 use crate::util::lock::Mutex;
 
 /// A pipeline used to build a packet.
 ///
 /// This enumeration acts as a linked list of protocol layers which are called one after the other.
 /// Each instance represents a layer and points to the next.
-pub enum TransmitPipeline {
+pub enum TransmitPipeline<'addr> {
 	/// Wraps data from the previous layer into a packet according to the protocol associated with
 	/// the current layer, then passes the result to the next layer.
 	Wrap {
 		/// The current layer.
 		curr: Box<dyn TransmitBuilder>,
 		/// The next layer.
-		next: Box<TransmitPipeline>,
+		next: Box<TransmitPipeline<'addr>>,
 	},
+
 	/// Transmits the packet.
 	Flush {
-		// TODO
+		/// The destination address.
+		sockaddr: DynOwnership<'addr, dyn SockAddr>,
 	},
 }
 
-impl TransmitPipeline {
+impl<'addr> TransmitPipeline<'addr> {
 	/// Creates a new transmit pipeline.
 	///
 	/// Arguments:
@@ -46,13 +49,13 @@ impl TransmitPipeline {
 	///
 	/// If the descriptor is invalid or if the stack cannot be created, the function returns an
 	/// error.
-	pub fn new(desc: &SocketDesc, sockaddr: &dyn SockAddr) -> EResult<Self> {
+	pub fn new(desc: &SocketDesc, sockaddr: DynOwnership<'addr, dyn SockAddr>) -> EResult<Self> {
 		let domain = {
 			let guard = DOMAINS.lock();
 			let (ctor, _) = guard
 				.get(&desc.domain.get_id())
 				.ok_or_else(|| errno!(EINVAL))?;
-			ctor(desc, sockaddr)?
+			ctor(desc, sockaddr.as_ref())?
 		};
 
 		let protocol: u32 = if desc.protocol != 0 {
@@ -67,14 +70,16 @@ impl TransmitPipeline {
 		let protocol = {
 			let guard = PROTOCOLS.lock();
 			let ctor = guard.get(&protocol).ok_or_else(|| errno!(EINVAL))?;
-			ctor(desc, sockaddr)?
+			ctor(desc, sockaddr.as_ref())?
 		};
 
 		Ok(Self::Wrap {
 			curr: protocol,
 			next: Box::new(Self::Wrap {
 				curr: domain,
-				next: Box::new(Self::Flush {})?,
+				next: Box::new(Self::Flush {
+					sockaddr,
+				})?,
 			})?,
 		})
 	}
@@ -87,7 +92,9 @@ impl TransmitPipeline {
 				next,
 			} => curr.transmit(buff, next),
 
-			Self::Flush {} => {
+			Self::Flush {
+				sockaddr: _,
+			} => {
 				// TODO
 				todo!()
 			}

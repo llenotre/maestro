@@ -4,14 +4,13 @@ use super::TransmitBuilder;
 use crate::crypto::checksum;
 use crate::errno::EResult;
 use crate::net::osi::TransmitPipeline;
-use crate::net::sockaddr;
 use crate::net::sockaddr::SockAddr;
 use crate::net::Address;
 use crate::net::BuffList;
 use crate::net::SocketDesc;
-use crate::net::SocketDomain;
 use crate::util;
 use crate::util::boxed::Box;
+use crate::util::dyn_traits::DynOwnership;
 use core::ffi::c_short;
 use core::mem::size_of;
 use core::slice;
@@ -154,14 +153,9 @@ pub struct SockAddrIn {
 }
 
 impl SockAddr for SockAddrIn {
-	fn from_bytes<'b>(buf: &'b [u8]) -> EResult<&'b dyn SockAddr> {
-		let family = sockaddr::extract_family(buf).ok_or_else(|| errno!(EINVAL))?;
-		if family != SocketDomain::AfInet.get_id() as _ {
-			return Err(errno!(EINVAL));
-		}
-
+	fn from_bytes<'b>(buf: &'b [u8]) -> EResult<DynOwnership<'b, dyn SockAddr>> {
 		let sockaddr: &Self = unsafe { util::reinterpret(buf) }.ok_or_else(|| errno!(EINVAL))?;
-		Ok(sockaddr as _)
+		Ok(DynOwnership::Borrowed(sockaddr as _))
 	}
 
 	fn get_address(&self) -> Option<Address> {
@@ -211,14 +205,9 @@ pub struct SockAddrIn6 {
 }
 
 impl SockAddr for SockAddrIn6 {
-	fn from_bytes<'b>(buf: &'b [u8]) -> EResult<&'b dyn SockAddr> {
-		let family = sockaddr::extract_family(buf).ok_or_else(|| errno!(EINVAL))?;
-		if family != SocketDomain::AfInet6.get_id() as _ {
-			return Err(errno!(EINVAL));
-		}
-
+	fn from_bytes<'b>(buf: &'b [u8]) -> EResult<DynOwnership<'b, dyn SockAddr>> {
 		let sockaddr: &Self = unsafe { util::reinterpret(buf) }.ok_or_else(|| errno!(EINVAL))?;
-		Ok(sockaddr as _)
+		Ok(DynOwnership::Borrowed(sockaddr as _))
 	}
 
 	fn get_address(&self) -> Option<Address> {

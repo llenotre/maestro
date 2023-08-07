@@ -6,6 +6,7 @@
 
 pub mod boxed;
 pub mod container;
+pub mod dyn_traits;
 pub mod io;
 pub mod lock;
 pub mod math;

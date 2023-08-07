@@ -35,7 +35,7 @@ pub struct Socket {
 	/// The socket's stack descriptor.
 	desc: SocketDesc,
 	/// The socket's transmit pipeline.
-	transmit_pipeline: Option<osi::TransmitPipeline>,
+	transmit_pipeline: Option<osi::TransmitPipeline<'static>>,
 
 	/// The buffer containing received data. If `None`, reception has been shutdown.
 	receive_buffer: Option<RingBuffer<u8, Vec<u8>>>,
@@ -79,7 +79,7 @@ impl Socket {
 
 	/// Returns the socket's transmit pipeline.
 	#[inline(always)]
-	pub fn transmit_pipeline(&self) -> Option<&osi::TransmitPipeline> {
+	pub fn transmit_pipeline(&self) -> Option<&osi::TransmitPipeline<'static>> {
 		self.transmit_pipeline.as_ref()
 	}
 
@@ -164,7 +164,7 @@ impl Socket {
 	pub fn send_with_pipeline(
 		&mut self,
 		buf: &[u8],
-		pipeline: &TransmitPipeline,
+		pipeline: &TransmitPipeline<'_>,
 	) -> EResult<usize> {
 		pipeline.transmit(BuffList::from(buf))?;
 		Ok(buf.len())

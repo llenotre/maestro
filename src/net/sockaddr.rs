@@ -4,13 +4,15 @@
 use super::Address;
 use crate::errno::EResult;
 use crate::net::osi::DOMAINS;
+use crate::util::dyn_traits::DynOwnership;
+use crate::util::TryClone;
 use core::ffi::c_short;
 use core::mem::size_of;
 
 /// A socket address, represented by `sockaddr_*` structures in userspace.
-pub trait SockAddr {
+pub trait SockAddr: TryClone {
 	/// Returns the socket address associated with the given bytes representation.
-	fn from_bytes<'b>(buf: &'b [u8]) -> EResult<&'b dyn SockAddr>
+	fn from_bytes<'b>(buf: &'b [u8]) -> EResult<DynOwnership<'b, dyn SockAddr>>
 	where
 		Self: Sized;
 
@@ -24,7 +26,7 @@ pub trait SockAddr {
 ///
 /// This type is to be used when requiring a pointer to the `new` function of the trait
 /// [`SockAddr`].
-pub type SockAddrCtor = for<'b> fn(&'b [u8]) -> EResult<&'b dyn SockAddr>;
+pub type SockAddrCtor = for<'b> fn(&'b [u8]) -> EResult<DynOwnership<'b, dyn SockAddr>>;
 
 /// Extracts the `sin_family` field of a `sockaddr_*` structure (see [`SockAddr`]) structure from
 /// the given buffer.
@@ -36,7 +38,7 @@ pub fn extract_family(buf: &[u8]) -> Option<c_short> {
 }
 
 /// Returns the socket address associated with the given bytes representation.
-pub fn from_bytes<'b>(buf: &'b [u8]) -> EResult<&'b dyn SockAddr> {
+pub fn from_bytes<'b>(buf: &'b [u8]) -> EResult<DynOwnership<'b, dyn SockAddr>> {
 	let family = extract_family(buf).ok_or_else(|| errno!(EINVAL))?;
 
 	let guard = DOMAINS.lock();
