@@ -5,6 +5,7 @@
 
 pub mod rational;
 
+use core::intrinsics::likely;
 use core::ops::Add;
 use core::ops::Div;
 use core::ops::Mul;
@@ -35,6 +36,26 @@ where
 	T: From<u8> + Shl<Output = T>,
 {
 	T::from(1) << n
+}
+
+/// Like `ilog2`, but:
+/// - the result is rounded up instead of down
+/// - if `n` is zero, the function returns zero
+#[inline(always)]
+pub fn log2_up(n: usize) -> usize {
+	if likely(n != 0) {
+		let leading = n.leading_zeros();
+		let trailing = n.trailing_zeros();
+
+		let res = u32::BITS - leading;
+		if likely(trailing != res - 1) {
+			res as _
+		} else {
+			(res - 1) as _
+		}
+	} else {
+		0
+	}
 }
 
 /// Computes a linear interpolation over integers.
@@ -80,6 +101,28 @@ where
 #[cfg(test)]
 mod test {
 	use super::*;
+
+	#[test_case]
+	fn log2_up() {
+		assert_eq!(log2_up(0), 0);
+		assert_eq!(log2_up(1), 0);
+		assert_eq!(log2_up(2), 1);
+		assert_eq!(log2_up(3), 2);
+		assert_eq!(log2_up(4), 2);
+		assert_eq!(log2_up(5), 3);
+		assert_eq!(log2_up(6), 3);
+		assert_eq!(log2_up(7), 3);
+		assert_eq!(log2_up(8), 3);
+		assert_eq!(log2_up(9), 4);
+		assert_eq!(log2_up(10), 4);
+		assert_eq!(log2_up(11), 4);
+		assert_eq!(log2_up(12), 4);
+		assert_eq!(log2_up(13), 4);
+		assert_eq!(log2_up(14), 4);
+		assert_eq!(log2_up(15), 4);
+		assert_eq!(log2_up(16), 4);
+		assert_eq!(log2_up(17), 5);
+	}
 
 	#[test_case]
 	fn gcd() {

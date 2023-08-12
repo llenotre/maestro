@@ -32,7 +32,8 @@ impl Block {
 	/// The underlying chunk created by this function is **not** inserted into the free list.
 	pub fn new(min_size: usize) -> Result<&'static mut Self, Errno> {
 		let min_total_size = size_of::<Block>() + min_size;
-		let block_order = buddy::get_order(math::ceil_div(min_total_size, memory::PAGE_SIZE));
+		let min_pages = math::ceil_div(min_total_size, memory::PAGE_SIZE);
+		let block_order = buddy::get_order(min_pages);
 
 		// The size of the first chunk
 		let first_chunk_size = buddy::get_frame_size(block_order) - size_of::<Block>();

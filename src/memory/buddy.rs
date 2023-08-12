@@ -15,7 +15,6 @@ use crate::util::lock::*;
 use crate::util::math;
 use core::cmp::min;
 use core::ffi::c_void;
-use core::intrinsics::likely;
 use core::mem::size_of;
 use core::mem::MaybeUninit;
 
@@ -463,11 +462,7 @@ pub fn get_frame_size(order: FrameOrder) -> usize {
 /// Returns the buddy order required to fit the given number of pages.
 #[inline]
 pub fn get_order(pages: usize) -> FrameOrder {
-	if likely(pages != 0) {
-		(u32::BITS - pages.leading_zeros()) as _
-	} else {
-		0
-	}
+	math::log2_up(pages) as _
 }
 
 /// Returns the size of the metadata for one frame.
