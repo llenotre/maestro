@@ -75,7 +75,7 @@ The OS can then be run by a virtual machine such a **QEMU** or **VirtualBox**, o
 
 To run the build, you will need a few dependecies:
 
-- A i868 toolchain (espicially `i868-elf-ld`)
+- `i686-elf-ld` to link the binary
 - `grub`, to create the bootable disk image
 - `libisoburn`, needed to create the iso
 - `mtool`
