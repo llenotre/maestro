@@ -71,6 +71,16 @@ The OS can then be run by a virtual machine such a **QEMU** or **VirtualBox**, o
 
 ## Build
 
+### Dependencies
+
+To run the build, you will need a few dependecies:
+
+- `i686-elf-ld` to link the binary
+- `grub`, to create the bootable disk image
+- `libisoburn`, needed to create the iso
+- `mtool`
+- `qemu-system-i386` to run it in qemu
+
 The configuration allows to easily specify which features have to be enabled in the kernel. This configuration is *required* to compile the kernel.
 
 A default configuration is available in the file `default.config.toml`. To use it, simply type the command:
