@@ -1,12 +1,30 @@
 #!/bin/bash
 
+# Check that all the dependencies are installed
+QEMU=qemu-system-i386
+GRUB_MKRESCUE=grub-mkrescue
+
+
+# Check if a program exists
+# $1 => program name
+check_program() {
+	if ! command -v "${1}" &> /dev/null
+	then
+		echo "${1} could not be found."
+		exit 1
+	fi
+}
+
+check_program $QEMU
+check_program $GRUB_MKRESCUE
+
 
 
 # Build ISO
 mkdir -p iso/boot/grub
 cp $1 iso/boot/maestro
 cp grub.cfg iso/boot/grub
-grub-mkrescue -o kernel.iso iso
+${GRUB_MKRESCUE} -o kernel.iso iso
 
 
 
@@ -19,7 +37,9 @@ if [ -f $QEMU_DISK ]; then
 	QEMUFLAGS="-drive file=$QEMU_DISK,format=raw $QEMUFLAGS"
 fi
 
-qemu-system-i386 -cdrom kernel.iso $QEMUFLAGS >qemu.log 2>&1
+
+
+${QEMU} -cdrom kernel.iso $QEMUFLAGS >qemu.log 2>&1
 EXIT=$?
 
 if [ "$EXIT" -ne 33 ]; then
