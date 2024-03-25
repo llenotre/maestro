@@ -1,52 +1,98 @@
 name: Check
-on: push
+on: [push]
 jobs:
   debug:
     runs-on: [self-hosted, linux]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Compilation
-        run: "scripts/ci/build.sh"
+        working-directory: ./kernel
+        run: ci/build.sh
       - name: Check Multiboot2 for x86
-        # TODO support multiple architectures
-        run: "grub-file --is-x86-multiboot2 target/x86/debug/maestro"
+        working-directory: ./kernel
+        run: grub-file --is-x86-multiboot2 target/x86/debug/maestro
   release:
     runs-on: [self-hosted, linux]
     needs: debug
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Compilation
-        run: "CARGOFLAGS='--release' scripts/ci/build.sh"
+        working-directory: ./kernel
+        env:
+          CARGOFLAGS: --release
+        run: ci/build.sh
       - name: Check Multiboot2 for x86
-        # TODO support multiple architectures
-        run: "grub-file --is-x86-multiboot2 target/x86/release/maestro"
+        working-directory: ./kernel
+        run: grub-file --is-x86-multiboot2 target/x86/release/maestro
   selftest:
     runs-on: [self-hosted, linux]
     needs: debug
     steps:
-      - uses: actions/checkout@v3
-      - name: Run tests
-        run: "scripts/ci/selftest.sh"
+      - uses: actions/checkout@v4
+      - name: Run utils tests
+        working-directory: ./utils
+        run: cargo test
+        timeout-minutes: 10
+      - name: Run kernel tests
+        working-directory: ./kernel
+        run: ci/selftest.sh
+        timeout-minutes: 10
   strace:
     runs-on: [self-hosted, linux]
     needs: debug
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Compilation
-        run: "CARGOFLAGS='--features strace' scripts/ci/build.sh"
+        working-directory: ./kernel
+        env:
+          CARGOFLAGS: --features strace
+        run: ci/build.sh
       - name: Check Multiboot2 for x86
-        # TODO support multiple architectures
-        run: "grub-file --is-x86-multiboot2 target/x86/debug/maestro"
+        working-directory: ./kernel
+        run: grub-file --is-x86-multiboot2 target/x86/debug/maestro
   format:
     runs-on: [self-hosted, linux]
     steps:
-      - uses: actions/checkout@v3
-      - run: cargo fmt --check
+      - name: Macros
+        working-directory: ./macros
+        run: cargo fmt --check
+      - name: Utils
+        working-directory: ./utils
+        run: cargo fmt --check
+      - name: Kernel
+        working-directory: ./kernel
+        run: cargo fmt --check
   documentation:
     runs-on: [self-hosted, linux]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Build book
-        run: "mdbook build doc/"
+        run: mdbook build doc/
       - name: Build references
-        run: "scripts/ci/doc.sh"
+        working-directory: ./kernel
+        run: ci/doc.sh
+  clippy:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Macros
+        working-directory: ./macros
+        run: cargo clippy --all-features --tests
+      - name: Utils
+        working-directory: ./utils
+        run: cargo clippy --all-features --tests
+      - name: Kernel
+        working-directory: ./kernel
+        run: |
+          cp default.build-config.toml build-config.toml
+          cargo clippy --all-features --tests
+  miri:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Utils
+        working-directory: ./utils
+        env:
+          MIRIFLAGS: -Zmiri-disable-stacked-borrows
+        run: cargo miri test
+        timeout-minutes: 10
